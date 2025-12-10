@@ -14,50 +14,6 @@ const CardDatabaseContext = createContext<CardDatabaseState | undefined>(undefin
 const STORAGE_KEY = 'riftbound-card-database';
 const STORAGE_TIMESTAMP_KEY = 'riftbound-card-database-timestamp';
 
-// DotGG API response type (based on common patterns)
-interface DotGGCard {
-  id?: string;
-  code?: string;
-  card_id?: string;
-  cardCode?: string;
-  name?: string;
-  card_name?: string;
-  set?: string;
-  set_name?: string;
-  setName?: string;
-  rarity?: string;
-  number?: string;
-  card_number?: string;
-  collectorNumber?: string;
-  [key: string]: unknown;
-}
-
-function mapDotGGCardToCardData(card: DotGGCard, index: number): CardData | null {
-  // Extract card ID - try multiple possible field names
-  const cardId = card.code || card.card_id || card.cardCode || card.id;
-  if (!cardId || typeof cardId !== 'string') return null;
-
-  // Extract name
-  const name = card.name || card.card_name;
-  if (!name || typeof name !== 'string') return null;
-
-  // Extract set name
-  const setName = card.set || card.set_name || card.setName || 'Unknown Set';
-
-  // Extract rarity
-  const rarity = card.rarity;
-
-  // Extract card number
-  const cardNumber = card.number || card.card_number || card.collectorNumber;
-
-  return {
-    cardId: cardId.trim().toUpperCase(),
-    name: name.trim(),
-    setName: typeof setName === 'string' ? setName.trim() : 'Unknown Set',
-    rarity: typeof rarity === 'string' ? rarity.trim() : undefined,
-    cardNumber: typeof cardNumber === 'string' ? cardNumber.trim() : undefined,
-  };
-}
 
 export function CardDatabaseProvider({ children }: { children: ReactNode }) {
   const [cards, setCards] = useState<CardData[]>([]);
@@ -125,37 +81,40 @@ export function CardDatabaseProvider({ children }: { children: ReactNode }) {
 
       const data = await response.json();
       
-      // Handle different possible response structures
-      let rawCards: DotGGCard[] = [];
-      
-      if (Array.isArray(data)) {
-        // Direct array of cards
-        rawCards = data;
-      } else if (typeof data === 'object' && data !== null) {
-        // Indexed/keyed object format - flatten all values
-        // The API might return { "SET-001": {...}, "SET-002": {...} }
-        // or { cards: [...] } or { data: [...] }
-        if (data.cards && Array.isArray(data.cards)) {
-          rawCards = data.cards;
-        } else if (data.data && Array.isArray(data.data)) {
-          rawCards = data.data;
-        } else {
-          // Assume it's an indexed object where each value is a card
-          rawCards = Object.values(data) as DotGGCard[];
-        }
-      }
-
-      if (rawCards.length === 0) {
-        throw new Error('No card data received from API');
-      }
-
-      // Map to our CardData format
+      // Handle the indexed format: { names: [...], data: [[...], [...], ...] }
       const mappedCards: CardData[] = [];
-      for (let i = 0; i < rawCards.length; i++) {
-        const mapped = mapDotGGCardToCardData(rawCards[i], i);
-        if (mapped) {
-          mappedCards.push(mapped);
+      
+      if (data && Array.isArray(data.names) && Array.isArray(data.data)) {
+        // Find column indices
+        const names = data.names as string[];
+        const idIndex = names.indexOf('id');
+        const nameIndex = names.indexOf('name');
+        const setNameIndex = names.indexOf('set_name');
+        const rarityIndex = names.indexOf('rarity');
+        
+        if (idIndex === -1 || nameIndex === -1) {
+          throw new Error('API response missing required fields (id, name)');
         }
+        
+        for (const row of data.data) {
+          if (!Array.isArray(row)) continue;
+          
+          const cardId = row[idIndex];
+          const name = row[nameIndex];
+          const setName = setNameIndex !== -1 ? row[setNameIndex] : 'Unknown Set';
+          const rarity = rarityIndex !== -1 ? row[rarityIndex] : undefined;
+          
+          if (cardId && typeof cardId === 'string' && name && typeof name === 'string') {
+            mappedCards.push({
+              cardId: cardId.trim().toUpperCase(),
+              name: name.trim(),
+              setName: typeof setName === 'string' ? setName.trim() : 'Unknown Set',
+              rarity: typeof rarity === 'string' ? rarity.trim() : undefined,
+            });
+          }
+        }
+      } else {
+        throw new Error('Unexpected API response format');
       }
 
       if (mappedCards.length === 0) {
