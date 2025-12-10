@@ -281,31 +281,33 @@ export function CardScanner({ onCardDetected, onScanFailed }: CardScannerProps) 
             {/* Dark overlay outside scan area */}
             <div className="absolute inset-0 bg-black/40" />
             
-            {/* Clear scan window in the lower portion */}
-            <div 
-              className="absolute left-[8%] right-[8%] bottom-[10%] h-[28%] 
-                         bg-transparent border-2 border-primary rounded-lg
-                         shadow-[0_0_0_9999px_rgba(0,0,0,0.4)]"
-            >
-              {/* Corner markers */}
-              <div className="absolute -top-0.5 -left-0.5 w-6 h-6 border-t-3 border-l-3 border-primary rounded-tl-lg" />
-              <div className="absolute -top-0.5 -right-0.5 w-6 h-6 border-t-3 border-r-3 border-primary rounded-tr-lg" />
-              <div className="absolute -bottom-0.5 -left-0.5 w-6 h-6 border-b-3 border-l-3 border-primary rounded-bl-lg" />
-              <div className="absolute -bottom-0.5 -right-0.5 w-6 h-6 border-b-3 border-r-3 border-primary rounded-br-lg" />
-              
-              {/* Scanning line animation */}
-              {isScanning && (
-                <div className="absolute inset-0 overflow-hidden rounded-lg">
-                  <div className="absolute left-0 right-0 h-1 bg-gradient-to-r from-transparent via-primary to-transparent animate-scan-line" />
+            {/* Centered portrait card frame (2.5:3.5 aspect ratio) */}
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div 
+                className="relative bg-transparent border-2 border-primary rounded-lg
+                           shadow-[0_0_0_9999px_rgba(0,0,0,0.4)]"
+                style={{ aspectRatio: '2.5/3.5', height: '70%' }}
+              >
+                {/* Corner markers */}
+                <div className="absolute -top-0.5 -left-0.5 w-6 h-6 border-t-3 border-l-3 border-primary rounded-tl-lg" />
+                <div className="absolute -top-0.5 -right-0.5 w-6 h-6 border-t-3 border-r-3 border-primary rounded-tr-lg" />
+                <div className="absolute -bottom-0.5 -left-0.5 w-6 h-6 border-b-3 border-l-3 border-primary rounded-bl-lg" />
+                <div className="absolute -bottom-0.5 -right-0.5 w-6 h-6 border-b-3 border-r-3 border-primary rounded-br-lg" />
+                
+                {/* Scanning line animation */}
+                {isScanning && (
+                  <div className="absolute inset-0 overflow-hidden rounded-lg">
+                    <div className="absolute left-0 right-0 h-1 bg-gradient-to-r from-transparent via-primary to-transparent animate-scan-line" />
+                  </div>
+                )}
+                
+                {/* Instruction text inside card frame */}
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className="text-sm bg-background/90 px-3 py-1.5 rounded-full text-foreground font-medium">
+                    Position card here
+                  </span>
                 </div>
-              )}
-            </div>
-            
-            {/* Instruction text */}
-            <div className="absolute bottom-[40%] left-0 right-0 text-center">
-              <span className="text-sm bg-background/90 px-3 py-1.5 rounded-full text-foreground font-medium">
-                Position card ID in the frame
-              </span>
+              </div>
             </div>
           </div>
         )}
