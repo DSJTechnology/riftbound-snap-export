@@ -17,31 +17,54 @@ export function CardDatabaseStatus() {
   const { cards: embeddedCards, loaded: embeddingsLoaded, error: embeddingError, refreshEmbeddings } = useCardEmbeddings();
   const [expandedSets, setExpandedSets] = useState<Set<string>>(new Set());
   const [isSyncing, setIsSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<{ processed: number; total: number } | null>(null);
 
   const handleSyncCards = async () => {
     setIsSyncing(true);
+    setSyncProgress(null);
     
     try {
-      toast.info('Syncing cards and computing embeddings... This may take several minutes.');
+      toast.info('Syncing cards... Processing in batches.');
       
-      const { data, error } = await supabase.functions.invoke('sync-riftbound-cards');
+      let offset = 0;
+      let totalProcessed = 0;
+      let totalFailed = 0;
+      let totalCards = 0;
+      let hasMore = true;
       
-      if (error) {
-        throw new Error(error.message);
+      while (hasMore) {
+        const { data, error } = await supabase.functions.invoke('sync-riftbound-cards', {
+          body: { offset }
+        });
+        
+        if (error) {
+          throw new Error(error.message);
+        }
+        
+        if (!data?.success) {
+          throw new Error(data?.error || 'Sync failed');
+        }
+        
+        totalProcessed += data.processed || 0;
+        totalFailed += data.failed || 0;
+        totalCards = data.total || totalCards;
+        hasMore = data.hasMore || false;
+        offset = data.nextOffset || 0;
+        
+        setSyncProgress({ processed: totalProcessed, total: totalCards });
+        
+        console.log(`[Sync] Progress: ${totalProcessed}/${totalCards} (offset: ${offset}, hasMore: ${hasMore})`);
       }
       
-      if (data?.success) {
-        toast.success(`Synced ${data.synced} cards with embeddings (${data.failed} failed)`);
-        // Refresh both the hash index and embeddings
-        await Promise.all([refreshIndex(), refreshEmbeddings()]);
-      } else {
-        throw new Error(data?.error || 'Sync failed');
-      }
+      toast.success(`Synced ${totalProcessed} cards with embeddings (${totalFailed} failed)`);
+      // Refresh both the hash index and embeddings
+      await Promise.all([refreshIndex(), refreshEmbeddings()]);
     } catch (err) {
       console.error('Sync error:', err);
       toast.error(err instanceof Error ? err.message : 'Failed to sync cards');
     } finally {
       setIsSyncing(false);
+      setSyncProgress(null);
     }
   };
 
@@ -125,7 +148,10 @@ export function CardDatabaseStatus() {
           {isSyncing ? (
             <>
               <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              Syncing... (this may take a few minutes)
+              {syncProgress 
+                ? `Syncing... ${syncProgress.processed}/${syncProgress.total}`
+                : 'Starting sync...'
+              }
             </>
           ) : (
             <>
