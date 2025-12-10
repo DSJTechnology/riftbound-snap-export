@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo, useRef, useEffect, RefObject } from 'react';
 import { Search, Plus, X } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -8,12 +8,14 @@ import { cn } from '@/lib/utils';
 interface CardSearchProps {
   onCardSelect: (card: CardData) => void;
   autoFocus?: boolean;
+  inputRef?: RefObject<HTMLInputElement>;
 }
 
-export function CardSearch({ onCardSelect, autoFocus = false }: CardSearchProps) {
+export function CardSearch({ onCardSelect, autoFocus = false, inputRef: externalRef }: CardSearchProps) {
   const [query, setQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const internalRef = useRef<HTMLInputElement>(null);
+  const inputRef = externalRef || internalRef;
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const results = useMemo(() => {

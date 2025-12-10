@@ -190,4 +190,20 @@
       transform: translateY(100%);
     }
   }
+
+  .animate-scan-line {
+    animation: scanLineVertical 1.5s ease-in-out infinite;
+  }
+
+  @keyframes scanLineVertical {
+    0% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(100%);
+    }
+    100% {
+      transform: translateY(0);
+    }
+  }
 }

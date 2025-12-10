@@ -1,7 +1,7 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { ScanLine, ListChecks, Download, Trash2, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { CameraPreview } from '@/components/CameraPreview';
+import { CardScanner } from '@/components/CardScanner';
 import { CardSearch } from '@/components/CardSearch';
 import { AddCardDialog } from '@/components/AddCardDialog';
 import { CollectionList } from '@/components/CollectionList';
@@ -17,6 +17,8 @@ const Index = () => {
   const [activeTab, setActiveTab] = useState<Tab>('scan');
   const [pendingCard, setPendingCard] = useState<CardData | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [showManualSearch, setShowManualSearch] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   
   const {
     collection,
@@ -29,8 +31,25 @@ const Index = () => {
     stats,
   } = useCollection();
 
+  // Handle card detected from scanner
+  const handleCardDetected = useCallback((card: CardData) => {
+    setPendingCard(card);
+    toast.success(`Detected: ${card.name} (${card.cardId})`);
+  }, []);
+
+  // Handle scan failure - show manual search
+  const handleScanFailed = useCallback(() => {
+    setShowManualSearch(true);
+    // Focus the search input after a short delay
+    setTimeout(() => {
+      searchInputRef.current?.focus();
+    }, 100);
+  }, []);
+
+  // Handle card selected from manual search
   const handleCardSelect = useCallback((card: CardData) => {
     setPendingCard(card);
+    setShowManualSearch(false);
     toast.success(`Selected: ${card.name}`);
   }, []);
 
@@ -114,28 +133,50 @@ const Index = () => {
         {/* Scan Tab */}
         {activeTab === 'scan' && (
           <div className="space-y-6 animate-in">
-            {/* Step 1: Camera */}
+            {/* Scanner Section */}
             <section>
-              <h2 className="text-base font-semibold text-foreground mb-1">Step 1: Capture Card</h2>
-              <p className="text-sm text-muted-foreground mb-4">Open camera and position your card in the frame</p>
-              <CameraPreview />
+              <h2 className="text-base font-semibold text-foreground mb-1">Scan Card</h2>
+              <p className="text-sm text-muted-foreground mb-4">
+                Position the card ID (e.g., OGN-001) in the frame
+              </p>
+              <CardScanner 
+                onCardDetected={handleCardDetected}
+                onScanFailed={handleScanFailed}
+              />
             </section>
 
-            <div className="relative">
-              <div className="absolute inset-0 flex items-center">
-                <span className="w-full border-t border-border" />
-              </div>
-              <div className="relative flex justify-center text-xs">
-                <span className="bg-background px-2 text-muted-foreground">or search manually</span>
-              </div>
-            </div>
+            {/* Manual Search Section - shown after scan failure or toggle */}
+            {showManualSearch && (
+              <>
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center">
+                    <span className="w-full border-t border-border" />
+                  </div>
+                  <div className="relative flex justify-center text-xs">
+                    <span className="bg-background px-2 text-muted-foreground">Manual Search</span>
+                  </div>
+                </div>
 
-            {/* Step 2: Search */}
-            <section>
-              <h2 className="text-base font-semibold text-foreground mb-1">Step 2: Find Card</h2>
-              <p className="text-sm text-muted-foreground mb-4">Search by card ID or name to add to collection</p>
-              <CardSearch onCardSelect={handleCardSelect} />
-            </section>
+                <section>
+                  <h2 className="text-base font-semibold text-foreground mb-1">Search by Name or ID</h2>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    Type to search the card database
+                  </p>
+                  <CardSearch onCardSelect={handleCardSelect} inputRef={searchInputRef} />
+                </section>
+              </>
+            )}
+
+            {/* Toggle manual search */}
+            {!showManualSearch && (
+              <Button 
+                variant="ghost" 
+                className="w-full text-muted-foreground"
+                onClick={() => setShowManualSearch(true)}
+              >
+                Or search manually →
+              </Button>
+            )}
           </div>
         )}
 
