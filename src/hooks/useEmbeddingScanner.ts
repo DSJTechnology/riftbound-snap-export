@@ -1,13 +1,11 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
-import * as tf from '@tensorflow/tfjs';
 import { CardData } from '@/data/cardDatabase';
 import { useCardEmbeddings, EmbeddedCard } from '@/contexts/CardEmbeddingContext';
-import { useMobilenetModel } from '@/hooks/useMobilenetModel';
 import { preprocessVideoFrame, cosineSimilarity, findTopMatches } from '@/utils/imagePreprocess';
 
 // Configuration constants
 const SCAN_INTERVAL_MS = 800;
-const AUTO_CONFIRM_THRESHOLD = 0.75; // Cosine similarity threshold for auto-confirm
+const AUTO_CONFIRM_THRESHOLD = 0.70; // Cosine similarity threshold for auto-confirm
 const DUPLICATE_COOLDOWN_MS = 3000;
 
 export interface EmbeddingMatchResult {
@@ -34,7 +32,6 @@ export interface UseEmbeddingScannerReturn {
   videoRef: React.RefObject<HTMLVideoElement>;
   canvasRef: React.RefObject<HTMLCanvasElement>;
   isIndexReady: boolean;
-  isModelReady: boolean;
   isStreaming: boolean;
   isVideoReady: boolean;
   isScanning: boolean;
@@ -44,7 +41,6 @@ export interface UseEmbeddingScannerReturn {
   bestScore: number | null;
   matchCandidates: EmbeddingMatchResult[];
   indexProgress: { loaded: number; total: number };
-  modelLoading: boolean;
   error: string | null;
   pendingMatch: PendingMatch | null;
   recentScans: RecentScan[];
@@ -68,14 +64,10 @@ export function useEmbeddingScanner({
   // Use global card embedding context
   const { cards: cardIndex, loaded: contextLoaded, loading: contextLoading, progress: indexProgress, error: embeddingError } = useCardEmbeddings();
   
-  // Use MobileNet model hook
-  const { isReady: modelReady, isLoading: modelLoading, error: modelError, getEmbedding } = useMobilenetModel();
-  
   // Only consider index ready if we actually have cards with embeddings
   const isIndexReady = contextLoaded && cardIndex.length > 0;
-  const isModelReady = modelReady;
   
-  console.log('[useEmbeddingScanner] State:', { contextLoaded, cardIndexLength: cardIndex.length, isIndexReady, isModelReady });
+  console.log('[useEmbeddingScanner] State:', { contextLoaded, cardIndexLength: cardIndex.length, isIndexReady });
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -108,9 +100,9 @@ export function useEmbeddingScanner({
     };
   }, []);
 
-  // Scan the current camera frame using MobileNet embeddings
-  const scanFrameInternal = useCallback(async (): Promise<{ bestMatch: EmbeddedCard | null; bestScore: number | null } | null> => {
-    if (!videoRef.current || cardIndex.length === 0 || !isModelReady) return null;
+  // Scan the current camera frame using embeddings
+  const scanFrameInternal = useCallback((): { bestMatch: EmbeddedCard | null; bestScore: number | null } | null => {
+    if (!videoRef.current || cardIndex.length === 0) return null;
 
     try {
       const video = videoRef.current;
@@ -119,16 +111,10 @@ export function useEmbeddingScanner({
         return null;
       }
 
-      // Preprocess video frame for MobileNet
-      const tensor = await preprocessVideoFrame(video, canvasRef.current || undefined);
+      // Preprocess video frame and get embedding
+      const frameEmbedding = preprocessVideoFrame(video, canvasRef.current || undefined);
       
-      // Get embedding from MobileNet
-      const frameEmbedding = await getEmbedding(tensor);
-      
-      // Clean up tensor
-      tensor.dispose();
-      
-      if (!frameEmbedding) {
+      if (!frameEmbedding || frameEmbedding.length === 0) {
         console.warn('[EmbeddingScanner] Failed to get embedding');
         return null;
       }
@@ -156,17 +142,17 @@ export function useEmbeddingScanner({
       console.error('[EmbeddingScanner] Scan frame error:', err);
       return null;
     }
-  }, [cardIndex, isModelReady, getEmbedding]);
+  }, [cardIndex]);
 
   // Auto-scan frame with auto-confirm logic
-  const autoScanFrame = useCallback(async () => {
+  const autoScanFrame = useCallback(() => {
     if (isScanningRef.current) return;
 
     isScanningRef.current = true;
     setIsScanning(true);
 
     try {
-      const result = await scanFrameInternal();
+      const result = scanFrameInternal();
 
       if (result?.bestMatch && result.bestScore !== null && result.bestScore >= AUTO_CONFIRM_THRESHOLD) {
         const now = Date.now();
@@ -187,7 +173,7 @@ export function useEmbeddingScanner({
 
   // Start/stop auto-scan loop
   useEffect(() => {
-    if (isStreaming && isVideoReady && autoScanEnabled && enabled && isIndexReady && isModelReady) {
+    if (isStreaming && isVideoReady && autoScanEnabled && enabled && isIndexReady) {
       console.log('[EmbeddingScanner] Starting auto-scan loop');
       scanIntervalRef.current = window.setInterval(autoScanFrame, SCAN_INTERVAL_MS);
     } else {
@@ -204,7 +190,7 @@ export function useEmbeddingScanner({
         scanIntervalRef.current = null;
       }
     };
-  }, [isStreaming, isVideoReady, autoScanEnabled, enabled, isIndexReady, isModelReady, autoScanFrame]);
+  }, [isStreaming, isVideoReady, autoScanEnabled, enabled, isIndexReady, autoScanFrame]);
 
   const openCamera = useCallback(async () => {
     try {
@@ -257,17 +243,17 @@ export function useEmbeddingScanner({
   }, []);
 
   // Manual scan - always scans and shows confirmation for best match
-  const manualScan = useCallback(async () => {
-    console.log('[EmbeddingScanner] Manual scan triggered', { isStreaming, isVideoReady, isIndexReady, isModelReady });
+  const manualScan = useCallback(() => {
+    console.log('[EmbeddingScanner] Manual scan triggered', { isStreaming, isVideoReady, isIndexReady });
     
-    if (!isStreaming || !isVideoReady || !isIndexReady || !isModelReady) {
+    if (!isStreaming || !isVideoReady || !isIndexReady) {
       console.log('[EmbeddingScanner] Manual scan aborted - conditions not met');
       return;
     }
 
     setIsScanning(true);
     try {
-      const result = await scanFrameInternal();
+      const result = scanFrameInternal();
       console.log('[EmbeddingScanner] Manual scan result:', result);
 
       // Always show confirmation modal for manual scan if we have a match
@@ -277,7 +263,7 @@ export function useEmbeddingScanner({
     } finally {
       setIsScanning(false);
     }
-  }, [isStreaming, isVideoReady, isIndexReady, isModelReady, scanFrameInternal]);
+  }, [isStreaming, isVideoReady, isIndexReady, scanFrameInternal]);
 
   const confirmPendingMatch = useCallback(() => {
     if (!pendingMatch) return;
@@ -322,7 +308,6 @@ export function useEmbeddingScanner({
     videoRef,
     canvasRef,
     isIndexReady,
-    isModelReady,
     isStreaming,
     isVideoReady,
     isScanning,
@@ -332,8 +317,7 @@ export function useEmbeddingScanner({
     bestScore,
     matchCandidates,
     indexProgress,
-    modelLoading,
-    error: error || embeddingError || modelError,
+    error: error || embeddingError,
     pendingMatch,
     recentScans,
     openCamera,

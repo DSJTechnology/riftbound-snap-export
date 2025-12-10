@@ -43,7 +43,6 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
     videoRef,
     canvasRef,
     isIndexReady,
-    isModelReady,
     isStreaming,
     isVideoReady,
     isScanning,
@@ -53,7 +52,6 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
     bestScore,
     matchCandidates,
     indexProgress,
-    modelLoading,
     error,
     pendingMatch,
     recentScans,
@@ -79,25 +77,11 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
   };
 
   const matchQuality = getMatchQuality(bestScore);
-  const isFullyReady = isIndexReady && isModelReady;
 
   return (
     <div className="space-y-4">
-      {/* Model loading progress */}
-      {modelLoading && (
-        <div className="p-4 rounded-lg bg-accent/50 border border-accent space-y-2">
-          <div className="flex items-center gap-2 text-sm">
-            <Loader2 className="w-4 h-4 animate-spin" />
-            <span className="font-medium">Loading MobileNet model...</span>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            First load downloads the neural network (~14MB). This is cached for future visits.
-          </p>
-        </div>
-      )}
-
       {/* Index loading progress */}
-      {!isIndexReady && cards.length > 0 && !modelLoading && (
+      {!isIndexReady && cards.length > 0 && (
         <div className="p-4 rounded-lg bg-accent/50 border border-accent space-y-2">
           <div className="flex items-center justify-between text-sm">
             <span className="font-medium">Loading card embeddings...</span>
@@ -113,7 +97,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
       )}
 
       {/* No embeddings warning */}
-      {isModelReady && indexProgress.total === 0 && !modelLoading && (
+      {isIndexReady && indexProgress.total === 0 && (
         <div className="p-4 rounded-lg bg-yellow-500/10 border border-yellow-500/20 space-y-2">
           <div className="flex items-center gap-2 text-sm text-yellow-600">
             <AlertCircle className="w-4 h-4" />
@@ -160,8 +144,8 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
             <Camera className="w-16 h-16 opacity-30" />
             <span className="text-sm">Camera preview will appear here</span>
             <span className="text-xs opacity-60">{cards.length} cards in database</span>
-            {isFullyReady && (
-              <span className="text-xs text-primary">MobileNet + embeddings ready</span>
+            {isIndexReady && (
+              <span className="text-xs text-primary">Embeddings ready ({indexProgress.total} cards)</span>
             )}
           </div>
         )}
@@ -322,16 +306,11 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
         {!isStreaming ? (
           <Button
             onClick={openCamera}
-            disabled={!isFullyReady}
+            disabled={!isIndexReady}
             className="flex-1 h-14 text-base font-semibold"
             size="lg"
           >
-            {modelLoading ? (
-              <>
-                <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                Loading model...
-              </>
-            ) : !isIndexReady ? (
+            {!isIndexReady ? (
               <>
                 <Loader2 className="w-5 h-5 animate-spin mr-2" />
                 Loading embeddings... ({indexProgress.loaded}/{indexProgress.total})
@@ -380,7 +359,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
                 console.log('[AutoCardScanner] Manual scan clicked');
                 manualScan();
               }}
-              disabled={isScanning || !isVideoReady || !isFullyReady}
+              disabled={isScanning || !isVideoReady || !isIndexReady}
               variant="secondary"
               className="h-14 flex-1"
               size="lg"
