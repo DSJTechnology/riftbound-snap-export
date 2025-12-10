@@ -1,8 +1,9 @@
-import { useRef, useState, useCallback, useEffect } from 'react';
+import { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import { createWorker, Worker } from 'tesseract.js';
 import { Camera, X, Loader2, ScanLine, AlertCircle, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { CardData, findCardById, CARD_ID_PATTERN } from '@/data/cardDatabase';
+import { CardData, CARD_ID_PATTERN } from '@/data/cardDatabase';
+import { useCardDatabase, createCardDatabaseHelpers } from '@/contexts/CardDatabaseContext';
 import { cn } from '@/lib/utils';
 
 interface CardScannerProps {
@@ -11,6 +12,9 @@ interface CardScannerProps {
 }
 
 export function CardScanner({ onCardDetected, onScanFailed }: CardScannerProps) {
+  const { cards } = useCardDatabase();
+  const cardHelpers = useMemo(() => createCardDatabaseHelpers(cards), [cards]);
+  
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -198,7 +202,7 @@ export function CardScanner({ onCardDetected, onScanFailed }: CardScannerProps) 
         // Try to find a matching card in our database
         for (const match of matches) {
           const cardId = match.toUpperCase();
-          const card = findCardById(cardId);
+          const card = cardHelpers.findCardById(cardId);
           
           if (card) {
             setLastDetectedId(cardId);
@@ -222,7 +226,7 @@ export function CardScanner({ onCardDetected, onScanFailed }: CardScannerProps) 
     } finally {
       setIsScanning(false);
     }
-  }, [onCardDetected, onScanFailed]);
+  }, [onCardDetected, onScanFailed, cardHelpers]);
 
   return (
     <div className="space-y-4">
