@@ -69,6 +69,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
     lastDetectedId,
     currentCandidate,
     lastOcrText,
+    lastOcrConfidence,
     error,
     openCamera,
     closeCamera,
@@ -192,8 +193,20 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
 
             {/* OCR Debug info (bottom) */}
             {lastOcrText && (
-              <div className="absolute bottom-3 left-3 right-3 bg-black/80 px-2 py-1 rounded text-xs text-white/70 font-mono truncate">
-                OCR: {lastOcrText}
+              <div className="absolute bottom-3 left-3 right-3 bg-black/90 px-3 py-2 rounded-lg text-xs text-white font-mono">
+                <div className="flex justify-between items-center">
+                  <span className="truncate">Detected: {lastOcrText}</span>
+                  {lastOcrConfidence !== null && (
+                    <span className={cn(
+                      "ml-2 shrink-0 px-2 py-0.5 rounded",
+                      lastOcrConfidence >= 70 ? "bg-green-500/30 text-green-300" :
+                      lastOcrConfidence >= 50 ? "bg-yellow-500/30 text-yellow-300" :
+                      "bg-red-500/30 text-red-300"
+                    )}>
+                      {lastOcrConfidence.toFixed(0)}%
+                    </span>
+                  )}
+                </div>
               </div>
             )}
           </div>
