@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import { ScanLine, ListChecks, Download, Trash2, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { CameraScanner } from '@/components/CameraScanner';
+import { CameraPreview } from '@/components/CameraPreview';
 import { CardSearch } from '@/components/CardSearch';
 import { AddCardDialog } from '@/components/AddCardDialog';
 import { CollectionList } from '@/components/CollectionList';
@@ -17,7 +17,6 @@ const Index = () => {
   const [activeTab, setActiveTab] = useState<Tab>('scan');
   const [pendingCard, setPendingCard] = useState<CardData | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
-  const [showManualSearch, setShowManualSearch] = useState(false);
   
   const {
     collection,
@@ -30,13 +29,9 @@ const Index = () => {
     stats,
   } = useCollection();
 
-  const handleCardDetected = useCallback((card: CardData, detectedId: string) => {
-    setPendingCard(card);
-    toast.success(`Detected: ${card.name}`);
-  }, []);
-
   const handleCardSelect = useCallback((card: CardData) => {
     setPendingCard(card);
+    toast.success(`Selected: ${card.name}`);
   }, []);
 
   const handleConfirmAdd = useCallback((normalCount: number, foilCount: number) => {
@@ -119,12 +114,11 @@ const Index = () => {
         {/* Scan Tab */}
         {activeTab === 'scan' && (
           <div className="space-y-6 animate-in">
+            {/* Step 1: Camera */}
             <section>
-              <h2 className="text-sm font-medium text-muted-foreground mb-3">Camera Scanner</h2>
-              <CameraScanner
-                onCardDetected={handleCardDetected}
-                onManualSearch={() => setShowManualSearch(true)}
-              />
+              <h2 className="text-base font-semibold text-foreground mb-1">Step 1: Capture Card</h2>
+              <p className="text-sm text-muted-foreground mb-4">Open camera and position your card in the frame</p>
+              <CameraPreview />
             </section>
 
             <div className="relative">
@@ -136,12 +130,11 @@ const Index = () => {
               </div>
             </div>
 
+            {/* Step 2: Search */}
             <section>
-              <h2 className="text-sm font-medium text-muted-foreground mb-3">Manual Search</h2>
-              <CardSearch 
-                onCardSelect={handleCardSelect}
-                autoFocus={showManualSearch}
-              />
+              <h2 className="text-base font-semibold text-foreground mb-1">Step 2: Find Card</h2>
+              <p className="text-sm text-muted-foreground mb-4">Search by card ID or name to add to collection</p>
+              <CardSearch onCardSelect={handleCardSelect} />
             </section>
           </div>
         )}
