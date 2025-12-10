@@ -341,20 +341,23 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
               )}
             </Button>
 
-            {/* Manual scan button */}
+            {/* Manual scan button - always available when camera is on */}
             <Button
-              onClick={manualScan}
-              disabled={isScanning || !isVideoReady}
-              variant="outline"
-              className="h-14"
+              onClick={() => {
+                console.log('[AutoCardScanner] Manual scan clicked');
+                manualScan();
+              }}
+              disabled={isScanning || !isVideoReady || !isIndexReady}
+              variant="secondary"
+              className="h-14 flex-1"
               size="lg"
-              title="Manual Scan"
             >
               {isScanning ? (
-                <Loader2 className="w-5 h-5 animate-spin" />
+                <Loader2 className="w-5 h-5 animate-spin mr-2" />
               ) : (
-                <ScanLine className="w-5 h-5" />
+                <ScanLine className="w-5 h-5 mr-2" />
               )}
+              Scan
             </Button>
           </>
         )}
