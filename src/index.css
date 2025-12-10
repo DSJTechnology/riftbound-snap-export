@@ -192,18 +192,37 @@
   }
 
   .animate-scan-line {
-    animation: scanLineVertical 1.5s ease-in-out infinite;
+    animation: scanLineVertical 2s ease-in-out infinite;
   }
 
   @keyframes scanLineVertical {
     0% {
+      top: 0;
       transform: translateY(0);
     }
     50% {
-      transform: translateY(100%);
+      top: 100%;
+      transform: translateY(-100%);
     }
     100% {
+      top: 0;
       transform: translateY(0);
+    }
+  }
+
+  /* Pulse animation for scanning state */
+  .animate-scan-pulse {
+    animation: scanPulse 1s ease-in-out infinite;
+  }
+
+  @keyframes scanPulse {
+    0%, 100% {
+      opacity: 0.7;
+      box-shadow: 0 0 0 0 hsl(var(--primary) / 0.4);
+    }
+    50% {
+      opacity: 1;
+      box-shadow: 0 0 20px 4px hsl(var(--primary) / 0.3);
     }
   }
 }
