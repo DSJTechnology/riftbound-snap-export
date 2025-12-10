@@ -1,10 +1,11 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { supabase } from '@/integrations/supabase/client';
 
 export interface CardWithHash {
   cardId: string;
   name: string;
   set?: string;
-  setName?: string; // Alias for compatibility
+  setName?: string;
   rarity?: string;
   artUrl: string;
   hash: string;
@@ -15,6 +16,7 @@ interface CardHashContextValue {
   isIndexReady: boolean;
   indexProgress: { loaded: number; total: number };
   error: string | null;
+  refreshIndex: () => Promise<void>;
 }
 
 const CardHashContext = createContext<CardHashContextValue>({
@@ -22,6 +24,7 @@ const CardHashContext = createContext<CardHashContextValue>({
   isIndexReady: false,
   indexProgress: { loaded: 0, total: 0 },
   error: null,
+  refreshIndex: async () => {},
 });
 
 export function useCardHashes() {
@@ -34,48 +37,66 @@ export function CardHashProvider({ children }: { children: React.ReactNode }) {
   const [indexProgress, setIndexProgress] = useState({ loaded: 0, total: 0 });
   const [error, setError] = useState<string | null>(null);
   
-  // Guard against double-loading in React Strict Mode
   const hasLoadedRef = useRef(false);
+
+  const loadFromDatabase = async () => {
+    console.log('[CardHashContext] Loading cards from database...');
+    setError(null);
+    
+    try {
+      const { data, error: fetchError, count } = await supabase
+        .from('riftbound_cards')
+        .select('*', { count: 'exact' });
+      
+      if (fetchError) {
+        throw new Error(`Failed to fetch cards: ${fetchError.message}`);
+      }
+      
+      if (!data || data.length === 0) {
+        console.log('[CardHashContext] No cards in database yet');
+        setCardIndex([]);
+        setIndexProgress({ loaded: 0, total: 0 });
+        setIsIndexReady(true);
+        return;
+      }
+      
+      // Transform database format to app format
+      const cards: CardWithHash[] = data.map((row) => ({
+        cardId: row.card_id,
+        name: row.name,
+        set: row.set_name || undefined,
+        setName: row.set_name || undefined,
+        rarity: row.rarity || undefined,
+        artUrl: row.art_url || '',
+        hash: row.hash || '',
+      }));
+      
+      console.log(`[CardHashContext] Loaded ${cards.length} cards from database`);
+      
+      setCardIndex(cards);
+      setIndexProgress({ loaded: cards.length, total: cards.length });
+      setIsIndexReady(true);
+    } catch (err) {
+      console.error('[CardHashContext] Error loading from database:', err);
+      setError(err instanceof Error ? err.message : 'Failed to load cards');
+      setIsIndexReady(true);
+    }
+  };
+
+  const refreshIndex = async () => {
+    setIsIndexReady(false);
+    await loadFromDatabase();
+  };
 
   useEffect(() => {
     if (hasLoadedRef.current) return;
     hasLoadedRef.current = true;
-
-    async function loadHashes() {
-      console.log('[CardHashContext] Loading precomputed hashes from JSON...');
-      
-      try {
-        const res = await fetch('/data/riftbound_card_hashes.json');
-        
-        if (!res.ok) {
-          throw new Error(`Failed to load hashes: ${res.status} ${res.statusText}`);
-        }
-        
-        const data: CardWithHash[] = await res.json();
-        
-        // Normalize: ensure setName is populated from set for compatibility
-        const normalized = data.map(card => ({
-          ...card,
-          setName: card.setName || card.set,
-        }));
-        
-        console.log(`[CardHashContext] Loaded ${normalized.length} card hashes`);
-        
-        setCardIndex(normalized);
-        setIndexProgress({ loaded: normalized.length, total: normalized.length });
-        setIsIndexReady(true);
-      } catch (err) {
-        console.error('[CardHashContext] Error loading card hash index:', err);
-        setError(err instanceof Error ? err.message : 'Failed to load card hash index');
-        // Don't set isIndexReady to true on error
-      }
-    }
-
-    loadHashes();
+    
+    loadFromDatabase();
   }, []);
 
   return (
-    <CardHashContext.Provider value={{ cardIndex, isIndexReady, indexProgress, error }}>
+    <CardHashContext.Provider value={{ cardIndex, isIndexReady, indexProgress, error, refreshIndex }}>
       {children}
     </CardHashContext.Provider>
   );

@@ -1,0 +1,4 @@
+project_id = "otyiezyaqexbgibxgqtl"
+
+[functions.sync-riftbound-cards]
+verify_jwt = false
