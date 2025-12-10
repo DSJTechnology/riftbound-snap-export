@@ -1,15 +1,10 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { useCardDatabase } from './CardDatabaseContext';
-import { getImageHashFromCanvas } from '@/utils/imageHash';
-
-const ART_URL_BASE = 'https://static.dotgg.gg/riftbound/cards';
-const HASH_CACHE_KEY = 'riftbound-card-hashes-v2';
-const HASH_BITS = 8;
 
 export interface CardWithHash {
   cardId: string;
   name: string;
-  setName?: string;
+  set?: string;
+  setName?: string; // Alias for compatibility
   rarity?: string;
   artUrl: string;
   hash: string;
@@ -34,177 +29,50 @@ export function useCardHashes() {
 }
 
 export function CardHashProvider({ children }: { children: React.ReactNode }) {
-  const { cards } = useCardDatabase();
   const [cardIndex, setCardIndex] = useState<CardWithHash[]>([]);
   const [isIndexReady, setIsIndexReady] = useState(false);
   const [indexProgress, setIndexProgress] = useState({ loaded: 0, total: 0 });
   const [error, setError] = useState<string | null>(null);
-
-  // Track the last loaded cards count to avoid redundant loads
-  const lastLoadedCountRef = useRef(0);
+  
+  // Guard against double-loading in React Strict Mode
+  const hasLoadedRef = useRef(false);
 
   useEffect(() => {
-    console.log(`[CardHashContext] Effect triggered, cards.length: ${cards.length}, lastLoaded: ${lastLoadedCountRef.current}`);
-    
-    // Wait until cards are available
-    if (cards.length === 0) {
-      console.log('[CardHashContext] No cards yet, waiting...');
-      return;
-    }
+    if (hasLoadedRef.current) return;
+    hasLoadedRef.current = true;
 
-    // Skip if we already loaded this exact card count
-    if (lastLoadedCountRef.current === cards.length && cardIndex.length > 0) {
-      console.log('[CardHashContext] Already loaded, skipping');
-      return;
-    }
-
-    let cancelled = false;
-
-    async function loadCardHashes() {
-      console.log(`[CardHashContext] Starting to load hashes for ${cards.length} cards...`);
-      setIndexProgress({ loaded: 0, total: cards.length });
-      setIsIndexReady(false);
-      setError(null);
-
-      // Try to load cached hashes from localStorage
-      let cachedHashes: Record<string, string> = {};
+    async function loadHashes() {
+      console.log('[CardHashContext] Loading precomputed hashes from JSON...');
+      
       try {
-        const cached = localStorage.getItem(HASH_CACHE_KEY);
-        if (cached) {
-          cachedHashes = JSON.parse(cached);
-          console.log(`[CardHashContext] Loaded ${Object.keys(cachedHashes).length} cached hashes`);
+        const res = await fetch('/data/riftbound_card_hashes.json');
+        
+        if (!res.ok) {
+          throw new Error(`Failed to load hashes: ${res.status} ${res.statusText}`);
         }
-      } catch (e) {
-        console.warn('[CardHashContext] Failed to load cached hashes:', e);
-      }
-
-      const withHashes: CardWithHash[] = [];
-      const newHashes: Record<string, string> = { ...cachedHashes };
-      let loadedCount = 0;
-
-      // Check how many need computation
-      const cardsNeedingHash = cards.filter(c => !cachedHashes[c.cardId]);
-      console.log(`[CardHashContext] ${cardsNeedingHash.length} cards need hash computation`);
-
-      // If all hashes are cached, load them directly
-      if (cardsNeedingHash.length === 0) {
-        for (const card of cards) {
-          withHashes.push({
-            cardId: card.cardId,
-            name: card.name,
-            setName: card.setName,
-            rarity: card.rarity,
-            artUrl: `${ART_URL_BASE}/${card.cardId}.webp`,
-            hash: cachedHashes[card.cardId],
-          });
-        }
-        console.log(`[CardHashContext] All ${withHashes.length} hashes loaded from cache`);
-        if (!cancelled) {
-          setCardIndex(withHashes);
-          setIndexProgress({ loaded: cards.length, total: cards.length });
-          setIsIndexReady(true);
-          lastLoadedCountRef.current = cards.length;
-        }
-        return;
-      }
-
-      // Process cards - use cached where available, compute missing ones
-      const BATCH_SIZE = 10;
-
-      for (let i = 0; i < cards.length; i += BATCH_SIZE) {
-        if (cancelled) break;
-
-        const batch = cards.slice(i, i + BATCH_SIZE);
-        const batchPromises = batch.map(async (card) => {
-          const artUrl = `${ART_URL_BASE}/${card.cardId}.webp`;
-
-          // Use cached hash if available
-          if (cachedHashes[card.cardId]) {
-            return {
-              cardId: card.cardId,
-              name: card.name,
-              setName: card.setName,
-              rarity: card.rarity,
-              artUrl,
-              hash: cachedHashes[card.cardId],
-            };
-          }
-
-          // Compute hash for missing card
-          try {
-            const img = new Image();
-            img.crossOrigin = 'anonymous';
-            img.src = artUrl;
-
-            await new Promise<void>((resolve, reject) => {
-              img.onload = () => resolve();
-              img.onerror = () => reject(new Error(`Failed to load ${artUrl}`));
-            });
-
-            const canvas = document.createElement('canvas');
-            canvas.width = img.naturalWidth || img.width;
-            canvas.height = img.naturalHeight || img.height;
-            const ctx = canvas.getContext('2d');
-            if (!ctx) throw new Error('No canvas context');
-            ctx.drawImage(img, 0, 0);
-
-            const hash = getImageHashFromCanvas(canvas, HASH_BITS);
-            newHashes[card.cardId] = hash;
-
-            return {
-              cardId: card.cardId,
-              name: card.name,
-              setName: card.setName,
-              rarity: card.rarity,
-              artUrl,
-              hash,
-            };
-          } catch (err) {
-            console.warn(`[CardHashContext] Failed to hash ${card.cardId}:`, err);
-            return null;
-          }
-        });
-
-        const results = await Promise.all(batchPromises);
-
-        for (const result of results) {
-          if (result) {
-            withHashes.push(result);
-          }
-          loadedCount++;
-        }
-
-        if (!cancelled) {
-          setIndexProgress({ loaded: loadedCount, total: cards.length });
-        }
-      }
-
-      if (!cancelled) {
-        // Save updated hashes to localStorage
-        try {
-          localStorage.setItem(HASH_CACHE_KEY, JSON.stringify(newHashes));
-          console.log(`[CardHashContext] Cached ${Object.keys(newHashes).length} hashes`);
-        } catch (e) {
-          console.warn('[CardHashContext] Failed to save hashes to localStorage:', e);
-        }
-
-        console.log(`[CardHashContext] Finished loading ${withHashes.length} cards`);
-        setCardIndex(withHashes);
+        
+        const data: CardWithHash[] = await res.json();
+        
+        // Normalize: ensure setName is populated from set for compatibility
+        const normalized = data.map(card => ({
+          ...card,
+          setName: card.setName || card.set,
+        }));
+        
+        console.log(`[CardHashContext] Loaded ${normalized.length} card hashes`);
+        
+        setCardIndex(normalized);
+        setIndexProgress({ loaded: normalized.length, total: normalized.length });
         setIsIndexReady(true);
-        lastLoadedCountRef.current = cards.length;
+      } catch (err) {
+        console.error('[CardHashContext] Error loading card hash index:', err);
+        setError(err instanceof Error ? err.message : 'Failed to load card hash index');
+        // Don't set isIndexReady to true on error
       }
     }
 
-    loadCardHashes().catch((e) => {
-      console.error('[CardHashContext] loadCardHashes error:', e);
-      setError('Failed to load card image index');
-      // Don't set isIndexReady on error - keep it false
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [cards, cardIndex.length]);
+    loadHashes();
+  }, []);
 
   return (
     <CardHashContext.Provider value={{ cardIndex, isIndexReady, indexProgress, error }}>
