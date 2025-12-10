@@ -55,6 +55,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
     pendingMatch,
     recentScans,
     qualityIssues,
+    opencvReady,
     openCamera,
     closeCamera,
     toggleAutoScan,
@@ -148,6 +149,9 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
             {isIndexReady && (
               <span className="text-xs text-primary">Embeddings ready ({indexProgress.total} cards)</span>
             )}
+            <span className="text-xs opacity-60">
+              OpenCV: {opencvReady ? '✓ Ready' : 'Loading...'}
+            </span>
           </div>
         )}
 
