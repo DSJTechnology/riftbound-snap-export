@@ -63,8 +63,8 @@ export function CameraPreview({ onCapture }: CameraPreviewProps) {
 
   return (
     <div className="flex flex-col gap-4 items-center w-full">
-      {/* Camera Preview Area */}
-      <div className="w-full aspect-video border-2 border-dashed border-border rounded-xl flex items-center justify-center bg-black overflow-hidden relative">
+      {/* Camera Preview Area - Portrait 3:4 */}
+      <div className="w-full aspect-[3/4] border-2 border-dashed border-border rounded-xl flex items-center justify-center bg-black overflow-hidden relative max-h-[70vh]">
         <video
           ref={videoRef}
           autoPlay
@@ -74,17 +74,22 @@ export function CameraPreview({ onCapture }: CameraPreviewProps) {
           style={{ display: stream ? "block" : "none" }}
         />
         
-        {/* Card placement guide overlay */}
+        {/* Card placement guide overlay - 2.5:3.5 aspect ratio (standard card) */}
         {stream && (
-          <div className="absolute inset-4 border-2 border-primary/50 rounded-lg pointer-events-none">
-            <div className="absolute top-2 left-2 w-6 h-6 border-t-2 border-l-2 border-primary rounded-tl-md" />
-            <div className="absolute top-2 right-2 w-6 h-6 border-t-2 border-r-2 border-primary rounded-tr-md" />
-            <div className="absolute bottom-2 left-2 w-6 h-6 border-b-2 border-l-2 border-primary rounded-bl-md" />
-            <div className="absolute bottom-2 right-2 w-6 h-6 border-b-2 border-r-2 border-primary rounded-br-md" />
-            <div className="absolute inset-0 flex items-center justify-center">
-              <span className="text-primary/70 text-sm bg-black/50 px-2 py-1 rounded">
-                Position card here
-              </span>
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div 
+              className="border-2 border-primary/50 rounded-lg relative"
+              style={{ aspectRatio: '2.5/3.5', height: '75%' }}
+            >
+              <div className="absolute top-2 left-2 w-6 h-6 border-t-2 border-l-2 border-primary rounded-tl-md" />
+              <div className="absolute top-2 right-2 w-6 h-6 border-t-2 border-r-2 border-primary rounded-tr-md" />
+              <div className="absolute bottom-2 left-2 w-6 h-6 border-b-2 border-l-2 border-primary rounded-bl-md" />
+              <div className="absolute bottom-2 right-2 w-6 h-6 border-b-2 border-r-2 border-primary rounded-br-md" />
+              <div className="absolute inset-0 flex items-center justify-center">
+                <span className="text-primary/70 text-sm bg-black/50 px-2 py-1 rounded">
+                  Position card here
+                </span>
+              </div>
             </div>
           </div>
         )}
