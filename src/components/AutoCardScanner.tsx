@@ -1,9 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { Camera, X, Loader2, ScanLine, AlertCircle, Search, Zap, ZapOff, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { CardData } from '@/data/cardDatabase';
 import { useCardDatabase } from '@/contexts/CardDatabaseContext';
-import { useImageScanner, CardWithHash } from '@/hooks/useImageScanner';
+import { useEmbeddingScanner, EmbeddedCard } from '@/hooks/useEmbeddingScanner';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { Progress } from '@/components/ui/progress';
@@ -43,16 +43,17 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
     videoRef,
     canvasRef,
     isIndexReady,
+    isModelReady,
     isStreaming,
     isVideoReady,
     isScanning,
     autoScanEnabled,
     lastDetectedId,
-    lastHash,
     bestMatch,
-    bestDistance,
+    bestScore,
     matchCandidates,
     indexProgress,
+    modelLoading,
     error,
     pendingMatch,
     recentScans,
@@ -64,35 +65,62 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
     handleVideoError,
     confirmPendingMatch,
     cancelPendingMatch,
-  } = useImageScanner({
+  } = useEmbeddingScanner({
     onCardConfirmed: handleCardConfirmed,
   });
 
-  // Get match quality
-  const getMatchQuality = (distance: number | null): 'excellent' | 'good' | 'fair' | 'poor' | 'none' => {
-    if (distance === null) return 'none';
-    if (distance <= 8) return 'excellent';
-    if (distance <= 12) return 'good';
-    if (distance <= 18) return 'fair';
+  // Get match quality based on cosine similarity score
+  const getMatchQuality = (score: number | null): 'excellent' | 'good' | 'fair' | 'poor' | 'none' => {
+    if (score === null) return 'none';
+    if (score >= 0.85) return 'excellent';
+    if (score >= 0.75) return 'good';
+    if (score >= 0.60) return 'fair';
     return 'poor';
   };
 
-  const matchQuality = getMatchQuality(bestDistance);
+  const matchQuality = getMatchQuality(bestScore);
+  const isFullyReady = isIndexReady && isModelReady;
 
   return (
     <div className="space-y-4">
+      {/* Model loading progress */}
+      {modelLoading && (
+        <div className="p-4 rounded-lg bg-accent/50 border border-accent space-y-2">
+          <div className="flex items-center gap-2 text-sm">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <span className="font-medium">Loading MobileNet model...</span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            First load downloads the neural network (~14MB). This is cached for future visits.
+          </p>
+        </div>
+      )}
+
       {/* Index loading progress */}
-      {!isIndexReady && cards.length > 0 && (
+      {!isIndexReady && cards.length > 0 && !modelLoading && (
         <div className="p-4 rounded-lg bg-accent/50 border border-accent space-y-2">
           <div className="flex items-center justify-between text-sm">
-            <span className="font-medium">Loading card images...</span>
+            <span className="font-medium">Loading card embeddings...</span>
             <span className="text-muted-foreground">
               {indexProgress.loaded} / {indexProgress.total}
             </span>
           </div>
           <Progress value={(indexProgress.loaded / Math.max(indexProgress.total, 1)) * 100} />
           <p className="text-xs text-muted-foreground">
-            First load may take a moment. Hashes are cached for future visits.
+            Loading precomputed embeddings from database.
+          </p>
+        </div>
+      )}
+
+      {/* No embeddings warning */}
+      {isModelReady && indexProgress.total === 0 && !modelLoading && (
+        <div className="p-4 rounded-lg bg-yellow-500/10 border border-yellow-500/20 space-y-2">
+          <div className="flex items-center gap-2 text-sm text-yellow-600">
+            <AlertCircle className="w-4 h-4" />
+            <span className="font-medium">No card embeddings found</span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Please run "Sync Cards from dotGG" in Settings to compute embeddings.
           </p>
         </div>
       )}
@@ -132,8 +160,8 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
             <Camera className="w-16 h-16 opacity-30" />
             <span className="text-sm">Camera preview will appear here</span>
             <span className="text-xs opacity-60">{cards.length} cards in database</span>
-            {isIndexReady && (
-              <span className="text-xs text-primary">Image index ready</span>
+            {isFullyReady && (
+              <span className="text-xs text-primary">MobileNet + embeddings ready</span>
             )}
           </div>
         )}
@@ -217,7 +245,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
             {/* Match info panel (bottom) - always show best guess */}
             <div className="absolute bottom-3 left-3 right-3 bg-black/90 px-3 py-2 rounded-lg text-xs space-y-1 pointer-events-auto">
               {/* Best match display - always show something */}
-              {bestMatch && bestDistance !== null ? (
+              {bestMatch && bestScore !== null ? (
                 <div className={cn(
                   "font-semibold",
                   matchQuality === 'excellent' ? "text-green-400" :
@@ -235,10 +263,10 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
                 </div>
               )}
               
-              {/* Distance/confidence indicator */}
-              {bestDistance !== null && (
+              {/* Similarity score indicator */}
+              {bestScore !== null && (
                 <div className="flex justify-between items-center text-white/70 font-mono">
-                  <span>Distance: {bestDistance} / 64</span>
+                  <span>Similarity: {(bestScore * 100).toFixed(1)}%</span>
                   <span className={cn(
                     "px-2 py-0.5 rounded",
                     matchQuality === 'excellent' ? "bg-green-500/30 text-green-300" :
@@ -256,7 +284,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
               {/* Top candidates for manual selection */}
               {matchCandidates.length > 1 && (
                 <div className="mt-1 pt-1 border-t border-white/20">
-                  <span className="text-white/60">Other options:</span>
+                  <span className="text-white/60">Did you mean:</span>
                   <div className="flex flex-wrap gap-1 mt-1">
                     {matchCandidates.slice(1, 4).map((result) => (
                       <button
@@ -273,12 +301,12 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
                         }}
                         className={cn(
                           "text-xs px-2 py-0.5 rounded",
-                          result.distance <= 10 ? "bg-green-500/30 hover:bg-green-500/50 text-green-200" :
-                          result.distance <= 15 ? "bg-yellow-500/30 hover:bg-yellow-500/50 text-yellow-200" :
+                          result.score >= 0.75 ? "bg-green-500/30 hover:bg-green-500/50 text-green-200" :
+                          result.score >= 0.60 ? "bg-yellow-500/30 hover:bg-yellow-500/50 text-yellow-200" :
                           "bg-primary/30 hover:bg-primary/50 text-primary-foreground"
                         )}
                       >
-                        {result.card.name} ({result.distance})
+                        {result.card.name} ({(result.score * 100).toFixed(0)}%)
                       </button>
                     ))}
                   </div>
@@ -294,14 +322,19 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
         {!isStreaming ? (
           <Button
             onClick={openCamera}
-            disabled={!isIndexReady}
+            disabled={!isFullyReady}
             className="flex-1 h-14 text-base font-semibold"
             size="lg"
           >
-            {!isIndexReady ? (
+            {modelLoading ? (
               <>
                 <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                Loading index... ({indexProgress.loaded}/{indexProgress.total})
+                Loading model...
+              </>
+            ) : !isIndexReady ? (
+              <>
+                <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                Loading embeddings... ({indexProgress.loaded}/{indexProgress.total})
               </>
             ) : (
               <>
@@ -347,7 +380,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
                 console.log('[AutoCardScanner] Manual scan clicked');
                 manualScan();
               }}
-              disabled={isScanning || !isVideoReady || !isIndexReady}
+              disabled={isScanning || !isVideoReady || !isFullyReady}
               variant="secondary"
               className="h-14 flex-1"
               size="lg"
@@ -394,7 +427,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
       {/* Helper text */}
       {isStreaming && isVideoReady && (
         <p className="text-center text-xs text-muted-foreground">
-          Position the card art within the frame. Lower distance = better match.
+          Position the card art within the frame. Higher similarity = better match.
         </p>
       )}
 
@@ -426,12 +459,12 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
                 )}
                 <div className={cn(
                   "text-xs mt-2 px-2 py-1 rounded inline-block",
-                  pendingMatch.distance <= 8 ? "bg-green-500/20 text-green-400" :
-                  pendingMatch.distance <= 12 ? "bg-green-400/20 text-green-300" :
-                  pendingMatch.distance <= 18 ? "bg-yellow-500/20 text-yellow-400" :
+                  pendingMatch.score >= 0.85 ? "bg-green-500/20 text-green-400" :
+                  pendingMatch.score >= 0.75 ? "bg-green-400/20 text-green-300" :
+                  pendingMatch.score >= 0.60 ? "bg-yellow-500/20 text-yellow-400" :
                   "bg-red-500/20 text-red-400"
                 )}>
-                  Match distance: {pendingMatch.distance}/64
+                  Similarity: {(pendingMatch.score * 100).toFixed(1)}%
                 </div>
               </div>
             </div>
@@ -454,44 +487,44 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
         </div>
       )}
 
-      {/* Recently Scanned List */}
+      {/* Recently Scanned Cards */}
       {recentScans.length > 0 && (
-        <section className="mt-6">
-          <h3 className="text-sm font-semibold mb-3 text-foreground">Recently Scanned</h3>
-          <div className="flex flex-col gap-2">
-            {recentScans.map(({ card, timestamp }) => (
+        <div className="space-y-2 mt-4">
+          <h3 className="text-sm font-semibold text-foreground">Recently scanned</h3>
+          <div className="grid gap-2">
+            {recentScans.map((scan, index) => (
               <div
-                key={`${card.cardId}-${timestamp}`}
-                className="flex items-center gap-3 text-xs bg-card/60 border border-border rounded-lg p-2"
+                key={`${scan.card.cardId}-${scan.timestamp}`}
+                className="flex items-center gap-3 p-2 rounded-lg bg-accent/50 border border-border"
               >
                 <img
-                  src={card.artUrl}
-                  alt={card.name}
-                  className="w-12 h-auto rounded shadow-sm"
+                  src={scan.card.artUrl}
+                  alt={scan.card.name}
+                  className="w-10 h-14 object-cover rounded"
                   onError={(e) => {
                     (e.target as HTMLImageElement).src = '/placeholder.svg';
                   }}
                 />
                 <div className="flex-1 min-w-0">
-                  <div className="font-semibold text-foreground truncate">
-                    {card.name}
+                  <div className="font-medium text-sm text-foreground truncate">
+                    {scan.card.name}
                   </div>
-                  <div className="text-muted-foreground font-mono">
-                    {card.cardId}
+                  <div className="text-xs text-muted-foreground font-mono">
+                    {scan.card.cardId}
                   </div>
-                  {card.setName && (
-                    <div className="text-muted-foreground/70 truncate">
-                      {card.setName}
+                  {scan.card.setName && (
+                    <div className="text-xs text-muted-foreground">
+                      {scan.card.setName}
                     </div>
                   )}
                 </div>
-                <div className="text-muted-foreground text-right whitespace-nowrap">
-                  {new Date(timestamp).toLocaleTimeString()}
+                <div className="text-xs text-muted-foreground">
+                  {new Date(scan.timestamp).toLocaleTimeString()}
                 </div>
               </div>
             ))}
           </div>
-        </section>
+        </div>
       )}
     </div>
   );

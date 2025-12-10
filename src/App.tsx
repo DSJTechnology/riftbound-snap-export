@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { CardDatabaseProvider } from "@/contexts/CardDatabaseContext";
 import { CardHashProvider } from "@/contexts/CardHashContext";
+import { CardEmbeddingProvider } from "@/contexts/CardEmbeddingContext";
 import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
 
@@ -14,17 +15,19 @@ const App = () => (
   <QueryClientProvider client={queryClient}>
     <CardDatabaseProvider>
       <CardHashProvider>
-        <TooltipProvider>
-          <Toaster />
-          <Sonner />
-          <BrowserRouter>
-            <Routes>
-              <Route path="/" element={<Index />} />
-              {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-              <Route path="*" element={<NotFound />} />
-            </Routes>
-          </BrowserRouter>
-        </TooltipProvider>
+        <CardEmbeddingProvider>
+          <TooltipProvider>
+            <Toaster />
+            <Sonner />
+            <BrowserRouter>
+              <Routes>
+                <Route path="/" element={<Index />} />
+                {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </BrowserRouter>
+          </TooltipProvider>
+        </CardEmbeddingProvider>
       </CardHashProvider>
     </CardDatabaseProvider>
   </QueryClientProvider>

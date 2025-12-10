@@ -19,6 +19,7 @@ export type Database = {
           art_url: string | null
           card_id: string
           created_at: string | null
+          embedding: Json | null
           hash: string | null
           id: string
           name: string
@@ -30,6 +31,7 @@ export type Database = {
           art_url?: string | null
           card_id: string
           created_at?: string | null
+          embedding?: Json | null
           hash?: string | null
           id?: string
           name: string
@@ -41,6 +43,7 @@ export type Database = {
           art_url?: string | null
           card_id?: string
           created_at?: string | null
+          embedding?: Json | null
           hash?: string | null
           id?: string
           name?: string
