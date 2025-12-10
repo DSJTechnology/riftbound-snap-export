@@ -1,7 +1,8 @@
-import { RefreshCw, Database, CheckCircle, AlertCircle, ChevronDown, ChevronRight, Hash, Loader2 } from 'lucide-react';
+import { RefreshCw, Database, CheckCircle, AlertCircle, ChevronDown, ChevronRight, Hash, Loader2, Brain } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useCardDatabase } from '@/contexts/CardDatabaseContext';
 import { useCardHashes } from '@/contexts/CardHashContext';
+import { useCardEmbeddings } from '@/contexts/CardEmbeddingContext';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { useState, useMemo } from 'react';
@@ -13,6 +14,7 @@ import { supabase } from '@/integrations/supabase/client';
 export function CardDatabaseStatus() {
   const { cards, lastUpdated, isLoading, error } = useCardDatabase();
   const { cardIndex, isIndexReady, error: hashError, refreshIndex } = useCardHashes();
+  const { cards: embeddedCards, loaded: embeddingsLoaded, error: embeddingError, refreshEmbeddings } = useCardEmbeddings();
   const [expandedSets, setExpandedSets] = useState<Set<string>>(new Set());
   const [isSyncing, setIsSyncing] = useState(false);
 
@@ -20,7 +22,7 @@ export function CardDatabaseStatus() {
     setIsSyncing(true);
     
     try {
-      toast.info('Syncing cards from dotGG... This may take a few minutes.');
+      toast.info('Syncing cards and computing embeddings... This may take several minutes.');
       
       const { data, error } = await supabase.functions.invoke('sync-riftbound-cards');
       
@@ -29,9 +31,9 @@ export function CardDatabaseStatus() {
       }
       
       if (data?.success) {
-        toast.success(`Synced ${data.synced} cards (${data.failed} failed)`);
-        // Refresh the local card index
-        await refreshIndex();
+        toast.success(`Synced ${data.synced} cards with embeddings (${data.failed} failed)`);
+        // Refresh both the hash index and embeddings
+        await Promise.all([refreshIndex(), refreshEmbeddings()]);
       } else {
         throw new Error(data?.error || 'Sync failed');
       }
@@ -134,8 +136,18 @@ export function CardDatabaseStatus() {
         </Button>
 
         <p className="text-xs text-muted-foreground">
-          Downloads all card images and computes recognition hashes. This may take several minutes for the first sync.
+          Downloads all card images, computes recognition embeddings, and stores everything in the cloud. This may take several minutes for the first sync.
         </p>
+
+        {/* Embedding status */}
+        {embeddingsLoaded && (
+          <div className="flex items-center gap-2 p-2 rounded bg-primary/10 border border-primary/20">
+            <Brain className="w-4 h-4 text-primary" />
+            <span className="text-xs text-foreground">
+              {embeddedCards.length} cards with AI embeddings ready
+            </span>
+          </div>
+        )}
 
         {/* Cards by Set - Expandable */}
         {cardIndex.length > 0 && (
@@ -206,10 +218,10 @@ export function CardDatabaseStatus() {
         
         <div className="text-xs text-muted-foreground space-y-2">
           <p>
-            Card images and recognition hashes are stored in Lovable Cloud. No local files needed!
+            Card images and AI embeddings are stored in Lovable Cloud. No local files needed!
           </p>
           <p>
-            The "Sync Cards" button fetches all cards from dotGG, downloads their artwork, computes recognition hashes, and stores everything in the cloud database.
+            The "Sync Cards" button fetches all cards from dotGG, downloads their artwork, computes 256-dimensional feature embeddings for AI-powered recognition, and stores everything in the cloud database.
           </p>
         </div>
       </div>
