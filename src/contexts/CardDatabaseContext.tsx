@@ -110,16 +110,17 @@ export function CardDatabaseProvider({ children }: { children: ReactNode }) {
     setIsLoading(true);
     setError(null);
 
+    // Use CORS proxy to bypass browser restrictions
+    const apiUrl = 'https://api.dotgg.gg/cgfw/getcards?game=riftbound&mode=indexed';
+    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(apiUrl)}`;
+
     try {
-      const response = await fetch(
-        'https://api.dotgg.gg/cgfw/getcards?game=riftbound&mode=indexed',
-        {
-          method: 'GET',
-          headers: {
-            'Accept': 'application/json',
-          },
-        }
-      );
+      const response = await fetch(proxyUrl, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+        },
+      });
 
       if (!response.ok) {
         throw new Error(`API returned ${response.status}: ${response.statusText}`);
