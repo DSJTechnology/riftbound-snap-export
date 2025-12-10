@@ -64,7 +64,12 @@ export function useImageScanner({
   enabled = true,
 }: UseImageScannerOptions): UseImageScannerReturn {
   // Use global card hash context instead of loading hashes locally
-  const { cardIndex, isIndexReady, indexProgress, error: hashError } = useCardHashes();
+  const { cardIndex, isIndexReady: contextIndexReady, indexProgress, error: hashError } = useCardHashes();
+  
+  // Only consider index ready if we actually have cards
+  const isIndexReady = contextIndexReady && cardIndex.length > 0;
+  
+  console.log('[useImageScanner] Context state:', { contextIndexReady, cardIndexLength: cardIndex.length, isIndexReady });
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
