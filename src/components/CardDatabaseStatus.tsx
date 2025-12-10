@@ -1,10 +1,11 @@
 import { RefreshCw, Database, CheckCircle, AlertCircle, ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { useCardDatabase, createCardDatabaseHelpers } from '@/contexts/CardDatabaseContext';
+import { useCardDatabase } from '@/contexts/CardDatabaseContext';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { useState, useMemo } from 'react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { ScrollArea } from '@/components/ui/scroll-area';
 
 export function CardDatabaseStatus() {
   const { cards, lastUpdated, isLoading, error, refreshCards } = useCardDatabase();
@@ -19,15 +20,23 @@ export function CardDatabaseStatus() {
     }
   };
 
-  // Group cards by set
+  // Group cards by set with full card data
   const cardsBySet = useMemo(() => {
-    const grouped: Record<string, number> = {};
+    const grouped: Record<string, typeof cards> = {};
     cards.forEach(card => {
       const set = card.setName || 'Unknown Set';
-      grouped[set] = (grouped[set] || 0) + 1;
+      if (!grouped[set]) {
+        grouped[set] = [];
+      }
+      grouped[set].push(card);
     });
-    // Sort by set name
-    return Object.entries(grouped).sort(([a], [b]) => a.localeCompare(b));
+    // Sort sets by name, and cards within each set by cardId
+    return Object.entries(grouped)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([setName, setCards]) => ({
+        setName,
+        cards: setCards.sort((a, b) => a.cardId.localeCompare(b.cardId))
+      }));
   }, [cards]);
 
   const toggleSet = (setName: string) => {
@@ -98,23 +107,55 @@ export function CardDatabaseStatus() {
         )}
       </Button>
 
-      {/* Cards by Set */}
+      {/* Cards by Set - Expandable */}
       {cards.length > 0 && (
         <div className="space-y-2">
           <h4 className="text-sm font-medium text-foreground">Cards by Set</h4>
-          <div className="space-y-1 max-h-64 overflow-y-auto">
-            {cardsBySet.map(([setName, count]) => (
-              <div
-                key={setName}
-                className="flex items-center justify-between px-3 py-2 rounded-md bg-muted/50 text-sm"
-              >
-                <span className="text-foreground truncate">{setName}</span>
-                <span className="text-muted-foreground font-mono text-xs ml-2 shrink-0">
-                  {count} cards
-                </span>
-              </div>
-            ))}
-          </div>
+          <ScrollArea className="max-h-80">
+            <div className="space-y-1 pr-3">
+              {cardsBySet.map(({ setName, cards: setCards }) => (
+                <Collapsible
+                  key={setName}
+                  open={expandedSets.has(setName)}
+                  onOpenChange={() => toggleSet(setName)}
+                >
+                  <CollapsibleTrigger className="flex items-center justify-between w-full px-3 py-2 rounded-md bg-muted/50 hover:bg-muted transition-colors text-sm">
+                    <div className="flex items-center gap-2">
+                      {expandedSets.has(setName) ? (
+                        <ChevronDown className="w-4 h-4 text-muted-foreground" />
+                      ) : (
+                        <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                      )}
+                      <span className="text-foreground truncate">{setName}</span>
+                    </div>
+                    <span className="text-muted-foreground font-mono text-xs ml-2 shrink-0">
+                      {setCards.length} cards
+                    </span>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <div className="ml-6 mt-1 space-y-0.5 max-h-48 overflow-y-auto">
+                      {setCards.map(card => (
+                        <div
+                          key={card.cardId}
+                          className="flex items-center justify-between px-2 py-1.5 text-xs rounded hover:bg-muted/30"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="font-mono text-primary shrink-0">{card.cardId}</span>
+                            <span className="text-foreground truncate">{card.name}</span>
+                          </div>
+                          {card.rarity && (
+                            <span className="text-muted-foreground text-[10px] shrink-0 ml-2">
+                              {card.rarity}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
+              ))}
+            </div>
+          </ScrollArea>
         </div>
       )}
 
