@@ -65,7 +65,6 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
     confirmPendingMatch,
     cancelPendingMatch,
   } = useImageScanner({
-    cards,
     onCardConfirmed: handleCardConfirmed,
   });
 
