@@ -14,13 +14,15 @@ interface DetectionEntry {
 }
 
 // Configuration constants - easily adjustable
-const SCAN_INTERVAL_MS = 800; // How often to scan (ms)
+const SCAN_INTERVAL_MS = 1000; // How often to scan (ms)
 const DETECTION_WINDOW_MS = 2500; // Time window for multi-frame confirmation
 const MIN_DETECTIONS_REQUIRED = 2; // Minimum detections to confirm
-const MIN_CONFIDENCE_THRESHOLD = 45; // Minimum average confidence %
+const MIN_CONFIDENCE_THRESHOLD = 50; // Minimum average confidence %
 const DUPLICATE_COOLDOWN_MS = 3000; // Time before same card can be added again
 const CARD_ID_REGEX = /[A-Z]{2,4}-\d{3}/g;
 const FUZZY_MATCH_THRESHOLD = 0.6; // Minimum score to auto-accept
+const MULTI_ATTEMPT_COUNT = 3; // Number of OCR attempts per scan
+const MULTI_ATTEMPT_DELAY_MS = 100; // Delay between attempts
 
 export interface UseAutoScannerOptions {
   onCardConfirmed: (card: CardData, cardId: string) => void;
@@ -41,6 +43,7 @@ export interface UseAutoScannerReturn {
   lastDetectedId: string | null;
   currentCandidate: string | null;
   lastOcrText: string | null;
+  lastOcrConfidence: number | null;
   error: string | null;
   openCamera: () => Promise<void>;
   closeCamera: () => void;
@@ -74,6 +77,7 @@ export function useAutoScanner({
   const [lastDetectedId, setLastDetectedId] = useState<string | null>(null);
   const [currentCandidate, setCurrentCandidate] = useState<string | null>(null);
   const [lastOcrText, setLastOcrText] = useState<string | null>(null);
+  const [lastOcrConfidence, setLastOcrConfidence] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Initialize Tesseract worker with optimized settings
@@ -141,9 +145,9 @@ export function useAutoScanner({
     const width = sourceCanvas.width;
     const height = sourceCanvas.height;
 
-    // Crop bottom 25% where card ID is located
-    const cropY = Math.floor(height * 0.75);
-    const cropHeight = Math.floor(height * 0.25);
+    // Crop bottom 20-25% where card ID is located
+    const cropY = Math.floor(height * 0.78);
+    const cropHeight = Math.floor(height * 0.22);
 
     // Create cropped canvas at 2x scale for better OCR
     const scaleFactor = 2;
@@ -161,57 +165,22 @@ export function useAutoScanner({
       0, 0, croppedCanvas.width, croppedCanvas.height
     );
 
-    // Get image data for processing
+    // Apply preprocessing: grayscale + binary threshold
     const imageData = croppedCtx.getImageData(0, 0, croppedCanvas.width, croppedCanvas.height);
     const data = imageData.data;
+    const threshold = 140; // Fixed threshold for consistent results
 
-    // Step 1: Convert to grayscale
     for (let i = 0; i < data.length; i += 4) {
-      const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-      data[i] = gray;
-      data[i + 1] = gray;
-      data[i + 2] = gray;
-    }
-
-    // Step 2: Calculate histogram for adaptive threshold
-    const histogram = new Array(256).fill(0);
-    for (let i = 0; i < data.length; i += 4) {
-      histogram[Math.floor(data[i])]++;
-    }
-
-    // Otsu's method for optimal threshold
-    const total = data.length / 4;
-    let sum = 0;
-    for (let i = 0; i < 256; i++) sum += i * histogram[i];
-
-    let sumB = 0;
-    let wB = 0;
-    let maxVariance = 0;
-    let threshold = 128;
-
-    for (let i = 0; i < 256; i++) {
-      wB += histogram[i];
-      if (wB === 0) continue;
-      const wF = total - wB;
-      if (wF === 0) break;
-
-      sumB += i * histogram[i];
-      const mB = sumB / wB;
-      const mF = (sum - sumB) / wF;
-      const variance = wB * wF * (mB - mF) * (mB - mF);
-
-      if (variance > maxVariance) {
-        maxVariance = variance;
-        threshold = i;
-      }
-    }
-
-    // Step 3: Apply binary threshold
-    for (let i = 0; i < data.length; i += 4) {
-      const value = data[i] > threshold ? 255 : 0;
-      data[i] = value;
-      data[i + 1] = value;
-      data[i + 2] = value;
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      // Convert to grayscale
+      const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+      // Apply binary threshold
+      const v = gray > threshold ? 255 : 0;
+      data[i] = v;
+      data[i + 1] = v;
+      data[i + 2] = v;
     }
 
     croppedCtx.putImageData(imageData, 0, 0);
@@ -362,7 +331,29 @@ export function useAutoScanner({
     }
   }, [findCardById, fuzzyMatchCardId, onCardConfirmed, onSuggestionsFound]);
 
-  // Single scan frame
+  // Helper to capture a single frame
+  const captureFrame = useCallback((): HTMLCanvasElement | null => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return null;
+    
+    const ctx = canvas.getContext('2d');
+    if (!ctx || video.readyState < 2) return null;
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0);
+    
+    // Return a copy of the canvas
+    const frameCopy = document.createElement('canvas');
+    frameCopy.width = canvas.width;
+    frameCopy.height = canvas.height;
+    const copyCtx = frameCopy.getContext('2d');
+    copyCtx?.drawImage(canvas, 0, 0);
+    return frameCopy;
+  }, []);
+
+  // Multi-attempt scan: take N frames, pick best confidence
   const scanFrame = useCallback(async () => {
     if (!videoRef.current || !canvasRef.current || !workerRef.current) return;
     if (isScanningRef.current) return; // Skip if already scanning
@@ -371,42 +362,59 @@ export function useAutoScanner({
     setIsScanning(true);
 
     try {
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d');
+      const results: Array<{ text: string; cardId: string | null; confidence: number }> = [];
 
-      if (!ctx || video.readyState < 2) {
-        isScanningRef.current = false;
-        setIsScanning(false);
-        return;
+      // Take multiple OCR attempts
+      for (let attempt = 0; attempt < MULTI_ATTEMPT_COUNT; attempt++) {
+        const frame = captureFrame();
+        if (!frame) continue;
+
+        const preprocessed = preprocessImage(frame);
+        const result = await runOCRWithRotation(preprocessed);
+        results.push(result);
+
+        console.log(`[OCR] Attempt ${attempt + 1}/${MULTI_ATTEMPT_COUNT}: "${result.text}" (${result.confidence.toFixed(1)}%)`);
+
+        // Small delay between attempts
+        if (attempt < MULTI_ATTEMPT_COUNT - 1) {
+          await new Promise(resolve => setTimeout(resolve, MULTI_ATTEMPT_DELAY_MS));
+        }
       }
 
-      // Set canvas to video dimensions
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      // Pick the result with highest confidence
+      const bestResult = results.reduce(
+        (best, current) => (current.confidence > best.confidence ? current : best),
+        { text: '', cardId: null, confidence: 0 }
+      );
 
-      // Draw current frame
-      ctx.drawImage(video, 0, 0);
+      // Clean the text: uppercase, only alphanumeric + dash
+      const cleanedText = bestResult.text
+        .toUpperCase()
+        .replace(/[^A-Z0-9\-]/g, '')
+        .trim();
 
-      // Preprocess and run OCR
-      const preprocessed = preprocessImage(canvas);
-      const result = await runOCRWithRotation(preprocessed);
+      // Update debug info
+      setLastOcrText(cleanedText || bestResult.text);
+      setLastOcrConfidence(bestResult.confidence);
 
-      // Update last OCR text for debugging
-      if (result.text) {
-        setLastOcrText(result.text);
-      }
+      console.log(`[OCR] Best result: "${cleanedText}" (confidence: ${bestResult.confidence.toFixed(1)}%)`);
 
-      if (result.cardId) {
+      // Extract card ID from cleaned text
+      const cardIdMatch = cleanedText.match(/[A-Z]{2,4}-\d{3}/);
+      const detectedCardId = cardIdMatch ? cardIdMatch[0] : bestResult.cardId;
+
+      if (detectedCardId && bestResult.confidence >= MIN_CONFIDENCE_THRESHOLD) {
         // Add to detection buffer
         detectionBufferRef.current.push({
-          cardId: result.cardId,
-          confidence: result.confidence,
+          cardId: detectedCardId,
+          confidence: bestResult.confidence,
           timestamp: Date.now(),
         });
 
         // Process buffer for confirmation
         processDetectionBuffer();
+      } else if (cleanedText) {
+        console.log(`[OCR] Low confidence (${bestResult.confidence.toFixed(1)}%) or no card ID found in: "${cleanedText}"`);
       }
     } catch (err) {
       console.error('[Scanner] Scan frame error:', err);
@@ -414,7 +422,7 @@ export function useAutoScanner({
       isScanningRef.current = false;
       setIsScanning(false);
     }
-  }, [preprocessImage, runOCRWithRotation, processDetectionBuffer]);
+  }, [captureFrame, preprocessImage, runOCRWithRotation, processDetectionBuffer]);
 
   // Start/stop auto-scan loop
   useEffect(() => {
@@ -444,6 +452,7 @@ export function useAutoScanner({
       setLastDetectedId(null);
       setCurrentCandidate(null);
       setLastOcrText(null);
+      setLastOcrConfidence(null);
       detectionBufferRef.current = [];
 
       console.log('[Camera] Requesting camera access...');
@@ -499,6 +508,7 @@ export function useAutoScanner({
     setLastDetectedId(null);
     setCurrentCandidate(null);
     setLastOcrText(null);
+    setLastOcrConfidence(null);
     setError(null);
     detectionBufferRef.current = [];
   }, []);
@@ -534,6 +544,7 @@ export function useAutoScanner({
     lastDetectedId,
     currentCandidate,
     lastOcrText,
+    lastOcrConfidence,
     error,
     openCamera,
     closeCamera,
