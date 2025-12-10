@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Camera, X, Loader2, ScanLine, AlertCircle, Search, Zap, ZapOff, Check } from 'lucide-react';
+import { Camera, X, Loader2, ScanLine, AlertCircle, Search, Zap, ZapOff, Check, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { CardData } from '@/data/cardDatabase';
 import { useCardDatabase } from '@/contexts/CardDatabaseContext';
@@ -7,6 +7,7 @@ import { useEmbeddingScanner, EmbeddedCard } from '@/hooks/useEmbeddingScanner';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { Progress } from '@/components/ui/progress';
+import { SIMILARITY_THRESHOLDS } from '@/utils/embeddingConfig';
 
 interface AutoCardScannerProps {
   onCardDetected: (card: CardData) => void;
@@ -19,7 +20,6 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
   const handleCardConfirmed = (card: CardData, cardId: string) => {
     onCardDetected(card);
     
-    // Show toast notification
     toast.success(
       `Added ${card.name} (${cardId})`,
       {
@@ -33,7 +33,6 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
       }
     );
 
-    // Vibration feedback if available
     if ('vibrate' in navigator) {
       navigator.vibrate(100);
     }
@@ -55,6 +54,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
     error,
     pendingMatch,
     recentScans,
+    qualityIssues,
     openCamera,
     closeCamera,
     toggleAutoScan,
@@ -62,6 +62,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
     handleVideoReady,
     handleVideoError,
     confirmPendingMatch,
+    selectCandidate,
     cancelPendingMatch,
   } = useEmbeddingScanner({
     onCardConfirmed: handleCardConfirmed,
@@ -70,9 +71,9 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
   // Get match quality based on cosine similarity score
   const getMatchQuality = (score: number | null): 'excellent' | 'good' | 'fair' | 'poor' | 'none' => {
     if (score === null) return 'none';
-    if (score >= 0.85) return 'excellent';
-    if (score >= 0.75) return 'good';
-    if (score >= 0.60) return 'fair';
+    if (score >= SIMILARITY_THRESHOLDS.EXCELLENT) return 'excellent';
+    if (score >= SIMILARITY_THRESHOLDS.GOOD) return 'good';
+    if (score >= SIMILARITY_THRESHOLDS.FAIR) return 'fair';
     return 'poor';
   };
 
@@ -169,6 +170,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
               <div 
                 className={cn(
                   "relative bg-transparent border-2 rounded-lg transition-colors duration-300",
+                  qualityIssues.length > 0 ? "border-yellow-500" :
                   matchQuality === 'excellent' ? "border-green-500" :
                   matchQuality === 'good' ? "border-green-400" :
                   matchQuality === 'fair' ? "border-yellow-500" :
@@ -184,7 +186,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
                 <div className="absolute -bottom-0.5 -right-0.5 w-6 h-6 border-b-3 border-r-3 border-primary rounded-br-lg" />
                 
                 {/* Scanning indicator */}
-                {autoScanEnabled && (
+                {autoScanEnabled && qualityIssues.length === 0 && (
                   <div className="absolute inset-0 overflow-hidden rounded-lg">
                     <div className="absolute left-0 right-0 h-1 bg-gradient-to-r from-transparent via-primary to-transparent animate-scan-line" />
                   </div>
@@ -192,7 +194,12 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
                 
                 {/* Status text */}
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
-                  {bestMatch ? (
+                  {qualityIssues.length > 0 ? (
+                    <div className="text-sm bg-yellow-500/90 px-3 py-1.5 rounded-full text-black font-medium flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4" />
+                      {qualityIssues[0]}
+                    </div>
+                  ) : bestMatch ? (
                     <span className={cn(
                       "text-sm px-3 py-1.5 rounded-full font-medium",
                       matchQuality === 'excellent' ? "bg-green-500/90 text-white" :
@@ -204,11 +211,16 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
                     </span>
                   ) : (
                     <span className="text-sm bg-background/90 px-3 py-1.5 rounded-full text-foreground font-medium">
-                      {autoScanEnabled ? 'Position card art in frame' : 'Auto-scan paused'}
+                      {autoScanEnabled ? 'Align card art in frame' : 'Auto-scan paused'}
                     </span>
                   )}
                 </div>
               </div>
+            </div>
+
+            {/* Alignment hint */}
+            <div className="absolute top-3 left-3 bg-background/90 px-3 py-1.5 rounded-full text-xs text-foreground">
+              Align card art inside the box
             </div>
 
             {/* Auto-scan status indicator */}
@@ -226,9 +238,8 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
               )}
             </div>
 
-            {/* Match info panel (bottom) - always show best guess */}
+            {/* Match info panel (bottom) */}
             <div className="absolute bottom-3 left-3 right-3 bg-black/90 px-3 py-2 rounded-lg text-xs space-y-1 pointer-events-auto">
-              {/* Best match display - always show something */}
               {bestMatch && bestScore !== null ? (
                 <div className={cn(
                   "font-semibold",
@@ -243,7 +254,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
                 </div>
               ) : (
                 <div className="text-white/60">
-                  Searching for match...
+                  {qualityIssues.length > 0 ? 'Adjust image and try again' : 'Searching for match...'}
                 </div>
               )}
               
@@ -265,7 +276,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
                 </div>
               )}
 
-              {/* Top candidates for manual selection */}
+              {/* Alternative candidates */}
               {matchCandidates.length > 1 && (
                 <div className="mt-1 pt-1 border-t border-white/20">
                   <span className="text-white/60">Did you mean:</span>
@@ -274,7 +285,6 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
                       <button
                         key={result.card.cardId}
                         onClick={() => {
-                          // Manually select this card and show confirmation
                           const cardData: CardData = {
                             cardId: result.card.cardId,
                             name: result.card.name,
@@ -285,8 +295,8 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
                         }}
                         className={cn(
                           "text-xs px-2 py-0.5 rounded",
-                          result.score >= 0.75 ? "bg-green-500/30 hover:bg-green-500/50 text-green-200" :
-                          result.score >= 0.60 ? "bg-yellow-500/30 hover:bg-yellow-500/50 text-yellow-200" :
+                          result.score >= SIMILARITY_THRESHOLDS.GOOD ? "bg-green-500/30 hover:bg-green-500/50 text-green-200" :
+                          result.score >= SIMILARITY_THRESHOLDS.FAIR ? "bg-yellow-500/30 hover:bg-yellow-500/50 text-yellow-200" :
                           "bg-primary/30 hover:bg-primary/50 text-primary-foreground"
                         )}
                       >
@@ -333,7 +343,6 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
               <X className="w-5 h-5" />
             </Button>
             
-            {/* Auto-scan toggle */}
             <Button
               onClick={toggleAutoScan}
               variant={autoScanEnabled ? "default" : "outline"}
@@ -343,17 +352,16 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
               {autoScanEnabled ? (
                 <>
                   <Zap className="w-5 h-5 mr-2" />
-                  Auto-Scan ON
+                  Auto ON
                 </>
               ) : (
                 <>
                   <ZapOff className="w-5 h-5 mr-2" />
-                  Auto-Scan OFF
+                  Auto OFF
                 </>
               )}
             </Button>
 
-            {/* Manual scan button - always available when camera is on */}
             <Button
               onClick={() => {
                 console.log('[AutoCardScanner] Manual scan clicked');
@@ -410,16 +418,18 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
         </p>
       )}
 
-      {/* Confirmation Modal */}
+      {/* Confirmation Modal with Top-K Candidates */}
       {pendingMatch && (
         <div className="fixed inset-0 flex items-center justify-center bg-black/60 z-50">
-          <div className="bg-card rounded-xl p-4 max-w-sm w-full mx-4 border border-border shadow-xl">
+          <div className="bg-card rounded-xl p-4 max-w-md w-full mx-4 border border-border shadow-xl max-h-[90vh] overflow-y-auto">
             <h2 className="text-lg font-semibold mb-3 text-foreground">Confirm Card</h2>
-            <div className="flex gap-4">
+            
+            {/* Selected card */}
+            <div className="flex gap-4 mb-4">
               <img
                 src={pendingMatch.card.artUrl}
                 alt={pendingMatch.card.name}
-                className="w-28 h-auto rounded-lg shadow-md"
+                className="w-28 h-auto rounded-lg shadow-md ring-2 ring-primary"
                 onError={(e) => {
                   (e.target as HTMLImageElement).src = '/placeholder.svg';
                 }}
@@ -438,16 +448,56 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
                 )}
                 <div className={cn(
                   "text-xs mt-2 px-2 py-1 rounded inline-block",
-                  pendingMatch.score >= 0.85 ? "bg-green-500/20 text-green-400" :
-                  pendingMatch.score >= 0.75 ? "bg-green-400/20 text-green-300" :
-                  pendingMatch.score >= 0.60 ? "bg-yellow-500/20 text-yellow-400" :
+                  pendingMatch.score >= SIMILARITY_THRESHOLDS.EXCELLENT ? "bg-green-500/20 text-green-400" :
+                  pendingMatch.score >= SIMILARITY_THRESHOLDS.GOOD ? "bg-green-400/20 text-green-300" :
+                  pendingMatch.score >= SIMILARITY_THRESHOLDS.FAIR ? "bg-yellow-500/20 text-yellow-400" :
                   "bg-red-500/20 text-red-400"
                 )}>
                   Similarity: {(pendingMatch.score * 100).toFixed(1)}%
                 </div>
               </div>
             </div>
-            <div className="mt-4 flex justify-end gap-2">
+
+            {/* Other candidates */}
+            {pendingMatch.candidates.length > 1 && (
+              <div className="mb-4">
+                <p className="text-sm text-muted-foreground mb-2">Not the right card? Select another:</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {pendingMatch.candidates.slice(1, 4).map((candidate) => (
+                    <button
+                      key={candidate.card.cardId}
+                      onClick={() => selectCandidate(candidate.card, candidate.score)}
+                      className={cn(
+                        "p-2 rounded-lg border transition-all",
+                        candidate.card.cardId === pendingMatch.card.cardId
+                          ? "border-primary bg-primary/10"
+                          : "border-border hover:border-primary/50 hover:bg-accent/50"
+                      )}
+                    >
+                      <img
+                        src={candidate.card.artUrl}
+                        alt={candidate.card.name}
+                        className="w-full aspect-[2.5/3.5] object-cover rounded mb-1"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).src = '/placeholder.svg';
+                        }}
+                      />
+                      <div className="text-xs truncate font-medium">{candidate.card.name}</div>
+                      <div className={cn(
+                        "text-xs",
+                        candidate.score >= SIMILARITY_THRESHOLDS.GOOD ? "text-green-400" :
+                        candidate.score >= SIMILARITY_THRESHOLDS.FAIR ? "text-yellow-400" :
+                        "text-muted-foreground"
+                      )}>
+                        {(candidate.score * 100).toFixed(0)}%
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
               <Button
                 variant="outline"
                 onClick={cancelPendingMatch}
