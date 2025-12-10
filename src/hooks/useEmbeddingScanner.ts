@@ -1,12 +1,17 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { CardData } from '@/data/cardDatabase';
 import { useCardEmbeddings, EmbeddedCard } from '@/contexts/CardEmbeddingContext';
-import {
-  preprocessVideoFrameWithQuality,
-  cosineSimilarity,
-  findTopMatches,
-  QualityCheckResult,
-} from '@/utils/imagePreprocess';
+import { 
+  loadOpenCV, 
+  isOpenCVReady, 
+  normalizeCardFromVideoFrame, 
+  extractArtRegion 
+} from '@/utils/cardNormalization';
+import { 
+  extractEmbeddingFromArtCanvas, 
+  cosineSimilarity, 
+  findTopMatches 
+} from '@/utils/artEmbedding';
 import { SIMILARITY_THRESHOLDS } from '@/utils/embeddingConfig';
 
 // Configuration constants
@@ -51,6 +56,7 @@ export interface UseEmbeddingScannerReturn {
   pendingMatch: PendingMatch | null;
   recentScans: RecentScan[];
   qualityIssues: string[];
+  opencvReady: boolean;
   openCamera: () => Promise<void>;
   closeCamera: () => void;
   toggleAutoScan: () => void;
@@ -71,8 +77,6 @@ export function useEmbeddingScanner({
   const { cards: cardIndex, loaded: contextLoaded, loading: contextLoading, progress: indexProgress, error: embeddingError } = useCardEmbeddings();
   
   const isIndexReady = contextLoaded && cardIndex.length > 0;
-  
-  console.log('[useEmbeddingScanner] State:', { contextLoaded, cardIndexLength: cardIndex.length, isIndexReady });
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -93,6 +97,19 @@ export function useEmbeddingScanner({
   const [pendingMatch, setPendingMatch] = useState<PendingMatch | null>(null);
   const [recentScans, setRecentScans] = useState<RecentScan[]>([]);
   const [qualityIssues, setQualityIssues] = useState<string[]>([]);
+  const [opencvReady, setOpencvReady] = useState(false);
+
+  // Load OpenCV on mount
+  useEffect(() => {
+    loadOpenCV()
+      .then(() => {
+        setOpencvReady(true);
+        console.log('[EmbeddingScanner] OpenCV loaded');
+      })
+      .catch((err) => {
+        console.warn('[EmbeddingScanner] OpenCV load failed, will use fallback:', err);
+      });
+  }, []);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -106,13 +123,13 @@ export function useEmbeddingScanner({
     };
   }, []);
 
-  // Scan the current camera frame using embeddings with quality check
-  const scanFrameInternal = useCallback((skipQualityCheck = false): { 
+  // Scan the current camera frame using card normalization and art embedding
+  const scanFrameInternal = useCallback(async (): Promise<{ 
     bestMatch: EmbeddedCard | null; 
     bestScore: number | null;
     candidates: EmbeddingMatchResult[];
-    quality: QualityCheckResult;
-  } | null => {
+    message: string;
+  } | null> => {
     if (!videoRef.current || cardIndex.length === 0) return null;
 
     try {
@@ -122,27 +139,28 @@ export function useEmbeddingScanner({
         return null;
       }
 
-      // Preprocess video frame with quality check
-      const { embedding: frameEmbedding, quality } = preprocessVideoFrameWithQuality(
-        video, 
-        canvasRef.current || undefined
-      );
+      // Step 1: Normalize card (detect edges, perspective correct)
+      const normResult = await normalizeCardFromVideoFrame(video);
       
-      // Update quality issues display
-      setQualityIssues(quality.issues);
-
-      // If quality check fails and we're not skipping it, return early
-      if (!skipQualityCheck && !quality.passed) {
-        console.log('[EmbeddingScanner] Quality check failed:', quality.issues);
-        return { bestMatch: null, bestScore: null, candidates: [], quality };
+      // Update quality issues based on detection success
+      if (!normResult.success) {
+        setQualityIssues([normResult.message]);
+      } else {
+        setQualityIssues([]);
       }
+
+      // Step 2: Extract art region from normalized card
+      const artCanvas = extractArtRegion(normResult.canvas);
+
+      // Step 3: Compute embedding from art
+      const frameEmbedding = extractEmbeddingFromArtCanvas(artCanvas);
 
       if (!frameEmbedding || frameEmbedding.length === 0) {
         console.warn('[EmbeddingScanner] Failed to get embedding');
         return null;
       }
 
-      // Find top matches using cosine similarity
+      // Step 4: Find top matches
       const topMatches = findTopMatches(frameEmbedding, cardIndex, 5);
       
       const best = topMatches[0]?.item || null;
@@ -162,35 +180,34 @@ export function useEmbeddingScanner({
       console.log('[EmbeddingScanner] Top matches:', topMatches.slice(0, 5).map(m => ({
         id: m.item.cardId,
         name: m.item.name,
-        score: m.score.toFixed(4),
+        score: (m.score * 100).toFixed(1) + '%',
       })));
 
-      return { bestMatch: best, bestScore: bestSimilarity, candidates, quality };
+      return { bestMatch: best, bestScore: bestSimilarity, candidates, message: normResult.message };
     } catch (err) {
       console.error('[EmbeddingScanner] Scan frame error:', err);
       return null;
     }
   }, [cardIndex]);
 
-  // Auto-scan frame with quality gating and auto-confirm logic
-  const autoScanFrame = useCallback(() => {
+  // Auto-scan frame with auto-confirm logic
+  const autoScanFrame = useCallback(async () => {
     if (isScanningRef.current) return;
 
     isScanningRef.current = true;
     setIsScanning(true);
 
     try {
-      const result = scanFrameInternal(false); // Don't skip quality check for auto-scan
+      const result = await scanFrameInternal();
 
       if (result?.bestMatch && result.bestScore !== null && 
-          result.bestScore >= SIMILARITY_THRESHOLDS.AUTO_CONFIRM &&
-          result.quality.passed) {
+          result.bestScore >= SIMILARITY_THRESHOLDS.AUTO_CONFIRM) {
         const now = Date.now();
         const lastTrigger = lastConfirmTriggerRef.current;
 
         // Check duplicate cooldown
         if (!lastTrigger || lastTrigger.cardId !== result.bestMatch.cardId || now - lastTrigger.timestamp >= DUPLICATE_COOLDOWN_MS) {
-          console.log(`[EmbeddingScanner] Auto-triggering confirmation for: ${result.bestMatch.name} (${result.bestMatch.cardId})`);
+          console.log(`[EmbeddingScanner] Auto-triggering confirmation for: ${result.bestMatch.name} (${result.bestMatch.cardId}) at ${(result.bestScore * 100).toFixed(1)}%`);
           lastConfirmTriggerRef.current = { cardId: result.bestMatch.cardId, timestamp: now };
           setPendingMatch({ 
             card: result.bestMatch, 
@@ -279,7 +296,7 @@ export function useEmbeddingScanner({
   }, []);
 
   // Manual scan - always scans and shows confirmation for best match
-  const manualScan = useCallback(() => {
+  const manualScan = useCallback(async () => {
     console.log('[EmbeddingScanner] Manual scan triggered', { isStreaming, isVideoReady, isIndexReady });
     
     if (!isStreaming || !isVideoReady || !isIndexReady) {
@@ -289,8 +306,7 @@ export function useEmbeddingScanner({
 
     setIsScanning(true);
     try {
-      // Skip quality check for manual scan - always show results
-      const result = scanFrameInternal(true);
+      const result = await scanFrameInternal();
       console.log('[EmbeddingScanner] Manual scan result:', result);
 
       // Always show confirmation modal for manual scan if we have a match
@@ -373,6 +389,7 @@ export function useEmbeddingScanner({
     pendingMatch,
     recentScans,
     qualityIssues,
+    opencvReady,
     openCamera,
     closeCamera,
     toggleAutoScan,
