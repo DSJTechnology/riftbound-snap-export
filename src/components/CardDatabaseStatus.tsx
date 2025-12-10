@@ -1,4 +1,4 @@
-import { RefreshCw, Database, CheckCircle, AlertCircle, ChevronDown, ChevronRight, Image, Hash } from 'lucide-react';
+import { RefreshCw, Database, CheckCircle, AlertCircle, ChevronDown, ChevronRight, Hash, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useCardDatabase } from '@/contexts/CardDatabaseContext';
 import { useCardHashes } from '@/contexts/CardHashContext';
@@ -8,26 +8,46 @@ import { useState, useMemo } from 'react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { supabase } from '@/integrations/supabase/client';
 
 export function CardDatabaseStatus() {
-  const { cards, lastUpdated, isLoading, error, refreshCards } = useCardDatabase();
-  const { cardIndex, isIndexReady, error: hashError } = useCardHashes();
+  const { cards, lastUpdated, isLoading, error } = useCardDatabase();
+  const { cardIndex, isIndexReady, error: hashError, refreshIndex } = useCardHashes();
   const [expandedSets, setExpandedSets] = useState<Set<string>>(new Set());
+  const [isSyncing, setIsSyncing] = useState(false);
 
-  const handleRefresh = async () => {
+  const handleSyncCards = async () => {
+    setIsSyncing(true);
+    
     try {
-      await refreshCards();
-      toast.success(`Card database updated. ${cards.length} cards loaded.`);
-    } catch (e) {
-      // Error is already handled in context
+      toast.info('Syncing cards from dotGG... This may take a few minutes.');
+      
+      const { data, error } = await supabase.functions.invoke('sync-riftbound-cards');
+      
+      if (error) {
+        throw new Error(error.message);
+      }
+      
+      if (data?.success) {
+        toast.success(`Synced ${data.synced} cards (${data.failed} failed)`);
+        // Refresh the local card index
+        await refreshIndex();
+      } else {
+        throw new Error(data?.error || 'Sync failed');
+      }
+    } catch (err) {
+      console.error('Sync error:', err);
+      toast.error(err instanceof Error ? err.message : 'Failed to sync cards');
+    } finally {
+      setIsSyncing(false);
     }
   };
 
   // Group cards by set with full card data
   const cardsBySet = useMemo(() => {
-    const grouped: Record<string, typeof cards> = {};
-    cards.forEach(card => {
-      const set = card.setName || 'Unknown Set';
+    const grouped: Record<string, typeof cardIndex> = {};
+    cardIndex.forEach(card => {
+      const set = card.setName || card.set || 'Unknown Set';
       if (!grouped[set]) {
         grouped[set] = [];
       }
@@ -40,7 +60,7 @@ export function CardDatabaseStatus() {
         setName,
         cards: setCards.sort((a, b) => a.cardId.localeCompare(b.cardId))
       }));
-  }, [cards]);
+  }, [cardIndex]);
 
   const toggleSet = (setName: string) => {
     setExpandedSets(prev => {
@@ -54,9 +74,6 @@ export function CardDatabaseStatus() {
     });
   };
 
-  // Check if hash index is outdated
-  const hashIndexOutdated = cards.length > 0 && cardIndex.length > 0 && cards.length !== cardIndex.length;
-
   return (
     <div className="space-y-4">
       {/* Card Database Section */}
@@ -67,56 +84,61 @@ export function CardDatabaseStatus() {
             <Database className="w-4 h-4 text-primary" />
             <span className="text-sm font-medium text-foreground">Card Database</span>
           </div>
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            {cards.length > 0 && (
+          <div className="flex items-center gap-1.5 text-xs">
+            {isIndexReady && cardIndex.length > 0 ? (
               <>
                 <CheckCircle className="w-3.5 h-3.5 text-green-500" />
-                <span>{cards.length} cards</span>
+                <span className="text-muted-foreground">{cardIndex.length} cards</span>
+              </>
+            ) : isIndexReady ? (
+              <>
+                <AlertCircle className="w-3.5 h-3.5 text-yellow-500" />
+                <span className="text-yellow-500">No cards</span>
+              </>
+            ) : (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+                <span className="text-muted-foreground">Loading...</span>
               </>
             )}
           </div>
         </div>
 
-        {/* Last updated info */}
-        <div className="text-xs text-muted-foreground">
-          {lastUpdated ? (
-            <span>Last updated: {format(lastUpdated, 'MMM d, yyyy h:mm a')}</span>
-          ) : (
-            <span>Using built-in card database</span>
-          )}
-        </div>
-
         {/* Error message */}
-        {error && (
+        {(error || hashError) && (
           <div className="flex items-start gap-2 p-2 rounded bg-destructive/10 border border-destructive/20">
             <AlertCircle className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
-            <p className="text-xs text-destructive">{error}</p>
+            <p className="text-xs text-destructive">{error || hashError}</p>
           </div>
         )}
 
-        {/* Update button */}
+        {/* Sync button */}
         <Button
-          onClick={handleRefresh}
-          disabled={isLoading}
-          variant="outline"
+          onClick={handleSyncCards}
+          disabled={isSyncing}
+          variant="default"
           size="sm"
           className="w-full"
         >
-          {isLoading ? (
+          {isSyncing ? (
             <>
-              <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-              Updating...
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              Syncing... (this may take a few minutes)
             </>
           ) : (
             <>
               <RefreshCw className="w-4 h-4 mr-2" />
-              Update Card Database
+              Sync Cards from dotGG
             </>
           )}
         </Button>
 
+        <p className="text-xs text-muted-foreground">
+          Downloads all card images and computes recognition hashes. This may take several minutes for the first sync.
+        </p>
+
         {/* Cards by Set - Expandable */}
-        {cards.length > 0 && (
+        {cardIndex.length > 0 && (
           <div className="space-y-2">
             <h4 className="text-sm font-medium text-foreground">Cards by Set</h4>
             <ScrollArea className="max-h-80">
@@ -168,69 +190,27 @@ export function CardDatabaseStatus() {
         )}
 
         {/* Empty state */}
-        {cards.length === 0 && !isLoading && (
+        {cardIndex.length === 0 && isIndexReady && (
           <div className="text-center py-4 text-muted-foreground text-sm">
-            No cards loaded. Tap "Update Card Database" to fetch cards.
+            No cards synced yet. Tap "Sync Cards from dotGG" to download the card database.
           </div>
         )}
       </div>
 
-      {/* Image Hash Index Section */}
+      {/* Scanner Index Info */}
       <div className="p-4 rounded-lg bg-card border border-border space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Hash className="w-4 h-4 text-primary" />
-            <span className="text-sm font-medium text-foreground">Scanner Index</span>
-          </div>
-          <div className="flex items-center gap-1.5 text-xs">
-            {isIndexReady && cardIndex.length > 0 ? (
-              <>
-                <CheckCircle className="w-3.5 h-3.5 text-green-500" />
-                <span className="text-muted-foreground">{cardIndex.length} cards indexed</span>
-              </>
-            ) : hashError ? (
-              <>
-                <AlertCircle className="w-3.5 h-3.5 text-destructive" />
-                <span className="text-destructive">Error</span>
-              </>
-            ) : (
-              <>
-                <AlertCircle className="w-3.5 h-3.5 text-yellow-500" />
-                <span className="text-yellow-500">Not ready</span>
-              </>
-            )}
-          </div>
+        <div className="flex items-center gap-2">
+          <Hash className="w-4 h-4 text-primary" />
+          <span className="text-sm font-medium text-foreground">Scanner Index</span>
         </div>
-
-        {hashError && (
-          <div className="flex items-start gap-2 p-2 rounded bg-destructive/10 border border-destructive/20">
-            <AlertCircle className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
-            <p className="text-xs text-destructive">{hashError}</p>
-          </div>
-        )}
-
-        {hashIndexOutdated && (
-          <Alert className="bg-yellow-500/10 border-yellow-500/20">
-            <AlertCircle className="h-4 w-4 text-yellow-500" />
-            <AlertDescription className="text-xs text-yellow-600">
-              Scanner index ({cardIndex.length}) doesn't match database ({cards.length}). 
-              Run the update script locally to sync.
-            </AlertDescription>
-          </Alert>
-        )}
-
+        
         <div className="text-xs text-muted-foreground space-y-2">
           <p>
-            The scanner uses precomputed image hashes stored in <code className="bg-muted px-1 rounded">riftbound_card_hashes.json</code>.
+            Card images and recognition hashes are stored in Lovable Cloud. No local files needed!
           </p>
           <p>
-            To update images and hashes after adding new cards:
+            The "Sync Cards" button fetches all cards from dotGG, downloads their artwork, computes recognition hashes, and stores everything in the cloud database.
           </p>
-          <ol className="list-decimal list-inside space-y-1 ml-2">
-            <li>Export <code className="bg-muted px-1 rounded">riftbound_cards.json</code> with new card IDs</li>
-            <li>Run: <code className="bg-muted px-1 rounded text-primary">npx ts-node scripts/updateRiftboundCardAssets.ts</code></li>
-            <li>Commit the generated files to your repo</li>
-          </ol>
         </div>
       </div>
     </div>
