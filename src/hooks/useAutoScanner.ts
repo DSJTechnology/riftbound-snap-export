@@ -44,6 +44,9 @@ export interface UseAutoScannerReturn {
   currentCandidate: string | null;
   lastOcrText: string | null;
   lastOcrConfidence: number | null;
+  recognizedCard: CardData | null;
+  matchScore: number | null;
+  matchCandidates: FuzzyMatchResult[];
   error: string | null;
   openCamera: () => Promise<void>;
   closeCamera: () => void;
@@ -78,6 +81,9 @@ export function useAutoScanner({
   const [currentCandidate, setCurrentCandidate] = useState<string | null>(null);
   const [lastOcrText, setLastOcrText] = useState<string | null>(null);
   const [lastOcrConfidence, setLastOcrConfidence] = useState<number | null>(null);
+  const [recognizedCard, setRecognizedCard] = useState<CardData | null>(null);
+  const [matchScore, setMatchScore] = useState<number | null>(null);
+  const [matchCandidates, setMatchCandidates] = useState<FuzzyMatchResult[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   // Initialize Tesseract worker with optimized settings
@@ -403,17 +409,52 @@ export function useAutoScanner({
       const cardIdMatch = cleanedText.match(/[A-Z]{2,4}-\d{3}/);
       const detectedCardId = cardIdMatch ? cardIdMatch[0] : bestResult.cardId;
 
-      if (detectedCardId && bestResult.confidence >= MIN_CONFIDENCE_THRESHOLD) {
-        // Add to detection buffer
-        detectionBufferRef.current.push({
-          cardId: detectedCardId,
-          confidence: bestResult.confidence,
-          timestamp: Date.now(),
-        });
+      // Always try to match and show what card we think it is
+      if (detectedCardId) {
+        // Try exact match first
+        const exactCard = findCardById(detectedCardId);
+        if (exactCard) {
+          setRecognizedCard(exactCard);
+          setMatchScore(1.0);
+          setMatchCandidates([]);
+          console.log(`[Match] Exact match found: ${exactCard.name} (${exactCard.cardId})`);
+        } else {
+          // Try fuzzy match
+          const fuzzyResults = fuzzyMatchCardId(detectedCardId);
+          if (fuzzyResults.length > 0) {
+            const best = fuzzyResults[0];
+            setRecognizedCard(best.card);
+            setMatchScore(best.score);
+            setMatchCandidates(fuzzyResults.slice(0, 3));
+            console.log(`[Match] Fuzzy match: ${best.card.name} (${best.card.cardId}) - score: ${(best.score * 100).toFixed(0)}%`);
+          } else {
+            setRecognizedCard(null);
+            setMatchScore(null);
+            setMatchCandidates([]);
+          }
+        }
 
-        // Process buffer for confirmation
-        processDetectionBuffer();
+        // Only add to buffer if confidence is good enough for auto-add
+        if (bestResult.confidence >= MIN_CONFIDENCE_THRESHOLD) {
+          detectionBufferRef.current.push({
+            cardId: detectedCardId,
+            confidence: bestResult.confidence,
+            timestamp: Date.now(),
+          });
+          processDetectionBuffer();
+        }
       } else if (cleanedText) {
+        // No card ID pattern found - try matching by name
+        const nameResults = fuzzyMatchCardId(cleanedText); // This will try name matching via fuzzyMatch
+        if (nameResults.length > 0 && nameResults[0].score >= 0.5) {
+          setRecognizedCard(nameResults[0].card);
+          setMatchScore(nameResults[0].score);
+          setMatchCandidates(nameResults.slice(0, 3));
+        } else {
+          setRecognizedCard(null);
+          setMatchScore(null);
+          setMatchCandidates([]);
+        }
         console.log(`[OCR] Low confidence (${bestResult.confidence.toFixed(1)}%) or no card ID found in: "${cleanedText}"`);
       }
     } catch (err) {
@@ -545,6 +586,9 @@ export function useAutoScanner({
     currentCandidate,
     lastOcrText,
     lastOcrConfidence,
+    recognizedCard,
+    matchScore,
+    matchCandidates,
     error,
     openCamera,
     closeCamera,
