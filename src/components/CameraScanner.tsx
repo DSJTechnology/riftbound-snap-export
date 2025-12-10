@@ -221,10 +221,10 @@ export function CameraScanner({ onCardDetected, onManualSearch }: CameraScannerP
       ) : (
         <div className="space-y-3">
           {/* Camera Preview */}
-          <div className="relative rounded-lg overflow-hidden bg-muted" style={{ minHeight: '280px' }}>
+          <div className="relative rounded-lg overflow-hidden bg-black aspect-[4/3]">
             {/* Loading indicator while video initializes */}
             {!isVideoReady && (
-              <div className="absolute inset-0 flex items-center justify-center bg-muted z-10">
+              <div className="absolute inset-0 flex items-center justify-center bg-black z-10">
                 <div className="text-center">
                   <Loader2 className="w-8 h-8 animate-spin text-primary mx-auto mb-2" />
                   <p className="text-sm text-muted-foreground">Starting camera...</p>
@@ -234,13 +234,17 @@ export function CameraScanner({ onCardDetected, onManualSearch }: CameraScannerP
             
             <video
               ref={videoRef}
-              className="w-full h-full object-cover"
-              style={{ minHeight: '280px' }}
               autoPlay
               playsInline
               muted
               onLoadedMetadata={handleVideoReady}
               onCanPlay={handleVideoReady}
+              style={{ 
+                display: 'block',
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+              }}
             />
             
             {/* Scan overlay - only show when video is ready */}
