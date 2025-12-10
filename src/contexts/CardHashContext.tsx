@@ -40,17 +40,23 @@ export function CardHashProvider({ children }: { children: React.ReactNode }) {
   const [indexProgress, setIndexProgress] = useState({ loaded: 0, total: 0 });
   const [error, setError] = useState<string | null>(null);
 
-  // Guard to avoid double-loading in React Strict Mode
-  const hasLoadedRef = useRef(false);
-  const cardsCountRef = useRef(0);
+  // Track the last loaded cards count to avoid redundant loads
+  const lastLoadedCountRef = useRef(0);
 
   useEffect(() => {
-    // Only reload if cards actually changed
-    if (cards.length === 0) return;
-    if (hasLoadedRef.current && cardsCountRef.current === cards.length) return;
+    console.log(`[CardHashContext] Effect triggered, cards.length: ${cards.length}, lastLoaded: ${lastLoadedCountRef.current}`);
     
-    hasLoadedRef.current = true;
-    cardsCountRef.current = cards.length;
+    // Wait until cards are available
+    if (cards.length === 0) {
+      console.log('[CardHashContext] No cards yet, waiting...');
+      return;
+    }
+
+    // Skip if we already loaded this exact card count
+    if (lastLoadedCountRef.current === cards.length && cardIndex.length > 0) {
+      console.log('[CardHashContext] Already loaded, skipping');
+      return;
+    }
 
     let cancelled = false;
 
@@ -93,9 +99,12 @@ export function CardHashProvider({ children }: { children: React.ReactNode }) {
           });
         }
         console.log(`[CardHashContext] All ${withHashes.length} hashes loaded from cache`);
-        setCardIndex(withHashes);
-        setIndexProgress({ loaded: cards.length, total: cards.length });
-        setIsIndexReady(true);
+        if (!cancelled) {
+          setCardIndex(withHashes);
+          setIndexProgress({ loaded: cards.length, total: cards.length });
+          setIsIndexReady(true);
+          lastLoadedCountRef.current = cards.length;
+        }
         return;
       }
 
@@ -182,19 +191,20 @@ export function CardHashProvider({ children }: { children: React.ReactNode }) {
         console.log(`[CardHashContext] Finished loading ${withHashes.length} cards`);
         setCardIndex(withHashes);
         setIsIndexReady(true);
+        lastLoadedCountRef.current = cards.length;
       }
     }
 
     loadCardHashes().catch((e) => {
       console.error('[CardHashContext] loadCardHashes error:', e);
       setError('Failed to load card image index');
-      setIsIndexReady(true);
+      // Don't set isIndexReady on error - keep it false
     });
 
     return () => {
       cancelled = true;
     };
-  }, [cards]);
+  }, [cards, cardIndex.length]);
 
   return (
     <CardHashContext.Provider value={{ cardIndex, isIndexReady, indexProgress, error }}>
