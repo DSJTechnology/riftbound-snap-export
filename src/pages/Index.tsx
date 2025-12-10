@@ -89,7 +89,7 @@ const Index = () => {
         <div className="container py-3 px-4">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-lg font-bold text-gradient">Riftbound Scanner</h1>
+              <h1 className="text-lg font-bold text-gradient">Riftbound Snap</h1>
               <p className="text-xs text-muted-foreground">Scan & Export Cards</p>
             </div>
             {stats.totalCards > 0 && (
