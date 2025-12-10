@@ -58,7 +58,7 @@ export function CameraScanner({ onCardDetected, onManualSearch }: CameraScannerP
       
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          facingMode: { ideal: 'environment' }, // Use back camera on mobile
+          facingMode: { ideal: 'environment' },
           width: { ideal: 1280 },
           height: { ideal: 720 },
         },
@@ -67,6 +67,13 @@ export function CameraScanner({ onCardDetected, onManualSearch }: CameraScannerP
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         setIsStreaming(true);
+        
+        // Explicitly call play() - required on some mobile browsers
+        try {
+          await videoRef.current.play();
+        } catch (playErr) {
+          console.error('Video play error:', playErr);
+        }
       }
     } catch (err) {
       console.error('Camera access error:', err);
@@ -83,7 +90,15 @@ export function CameraScanner({ onCardDetected, onManualSearch }: CameraScannerP
   }, []);
 
   const handleVideoReady = useCallback(() => {
-    setIsVideoReady(true);
+    // Check if video actually has frames before marking as ready
+    if (videoRef.current && videoRef.current.readyState >= 2) {
+      setIsVideoReady(true);
+    }
+  }, []);
+
+  const handleVideoError = useCallback((e: React.SyntheticEvent<HTMLVideoElement>) => {
+    console.error('Video error:', e);
+    setError('Video playback error. Please try again.');
   }, []);
 
   const stopCamera = useCallback(() => {
@@ -238,13 +253,11 @@ export function CameraScanner({ onCardDetected, onManualSearch }: CameraScannerP
               playsInline
               muted
               onLoadedMetadata={handleVideoReady}
+              onLoadedData={handleVideoReady}
               onCanPlay={handleVideoReady}
-              style={{ 
-                display: 'block',
-                width: '100%',
-                height: '100%',
-                objectFit: 'cover',
-              }}
+              onPlay={handleVideoReady}
+              onError={handleVideoError}
+              className="absolute inset-0 w-full h-full object-cover"
             />
             
             {/* Scan overlay - only show when video is ready */}
