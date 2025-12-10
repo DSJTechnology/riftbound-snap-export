@@ -14,6 +14,7 @@ export function CameraScanner({ onCardDetected, onManualSearch }: CameraScannerP
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isVideoReady, setIsVideoReady] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [worker, setWorker] = useState<Worker | null>(null);
@@ -53,9 +54,11 @@ export function CameraScanner({ onCardDetected, onManualSearch }: CameraScannerP
   const startCamera = useCallback(async () => {
     try {
       setError(null);
+      setIsVideoReady(false);
+      
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          facingMode: 'environment', // Use back camera on mobile
+          facingMode: { ideal: 'environment' }, // Use back camera on mobile
           width: { ideal: 1280 },
           height: { ideal: 720 },
         },
@@ -63,7 +66,6 @@ export function CameraScanner({ onCardDetected, onManualSearch }: CameraScannerP
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        await videoRef.current.play();
         setIsStreaming(true);
       }
     } catch (err) {
@@ -80,6 +82,10 @@ export function CameraScanner({ onCardDetected, onManualSearch }: CameraScannerP
     }
   }, []);
 
+  const handleVideoReady = useCallback(() => {
+    setIsVideoReady(true);
+  }, []);
+
   const stopCamera = useCallback(() => {
     if (videoRef.current?.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
@@ -87,6 +93,7 @@ export function CameraScanner({ onCardDetected, onManualSearch }: CameraScannerP
       videoRef.current.srcObject = null;
     }
     setIsStreaming(false);
+    setIsVideoReady(false);
     setLastDetectedId(null);
   }, []);
 
@@ -214,38 +221,54 @@ export function CameraScanner({ onCardDetected, onManualSearch }: CameraScannerP
       ) : (
         <div className="space-y-3">
           {/* Camera Preview */}
-          <div className="relative rounded-lg overflow-hidden bg-muted aspect-[4/3]">
+          <div className="relative rounded-lg overflow-hidden bg-muted" style={{ minHeight: '280px' }}>
+            {/* Loading indicator while video initializes */}
+            {!isVideoReady && (
+              <div className="absolute inset-0 flex items-center justify-center bg-muted z-10">
+                <div className="text-center">
+                  <Loader2 className="w-8 h-8 animate-spin text-primary mx-auto mb-2" />
+                  <p className="text-sm text-muted-foreground">Starting camera...</p>
+                </div>
+              </div>
+            )}
+            
             <video
               ref={videoRef}
               className="w-full h-full object-cover"
+              style={{ minHeight: '280px' }}
+              autoPlay
               playsInline
               muted
+              onLoadedMetadata={handleVideoReady}
+              onCanPlay={handleVideoReady}
             />
             
-            {/* Scan overlay */}
-            <div className="absolute inset-0 pointer-events-none">
-              {/* Target area indicator */}
-              <div className="absolute bottom-[15%] left-[10%] right-[10%] h-[25%] border-2 border-primary/60 rounded-lg">
-                {isScanning && (
-                  <div className="absolute inset-0 overflow-hidden">
-                    <div className="absolute left-0 right-0 h-0.5 bg-primary scanner-line" />
-                  </div>
-                )}
+            {/* Scan overlay - only show when video is ready */}
+            {isVideoReady && (
+              <div className="absolute inset-0 pointer-events-none">
+                {/* Target area indicator */}
+                <div className="absolute bottom-[15%] left-[10%] right-[10%] h-[25%] border-2 border-primary/60 rounded-lg">
+                  {isScanning && (
+                    <div className="absolute inset-0 overflow-hidden">
+                      <div className="absolute left-0 right-0 h-0.5 bg-primary scanner-line" />
+                    </div>
+                  )}
+                </div>
+                
+                {/* Corner markers */}
+                <div className="absolute bottom-[15%] left-[10%] w-4 h-4 border-l-2 border-t-2 border-primary" />
+                <div className="absolute bottom-[15%] right-[10%] w-4 h-4 border-r-2 border-t-2 border-primary" />
+                <div className="absolute bottom-[40%] left-[10%] w-4 h-4 border-l-2 border-b-2 border-primary" />
+                <div className="absolute bottom-[40%] right-[10%] w-4 h-4 border-r-2 border-b-2 border-primary" />
+                
+                {/* Instruction text */}
+                <div className="absolute bottom-2 left-0 right-0 text-center">
+                  <span className="text-xs bg-background/80 px-2 py-1 rounded text-muted-foreground">
+                    Position card ID in the highlighted area
+                  </span>
+                </div>
               </div>
-              
-              {/* Corner markers */}
-              <div className="absolute bottom-[15%] left-[10%] w-4 h-4 border-l-2 border-t-2 border-primary" />
-              <div className="absolute bottom-[15%] right-[10%] w-4 h-4 border-r-2 border-t-2 border-primary" />
-              <div className="absolute bottom-[40%] left-[10%] w-4 h-4 border-l-2 border-b-2 border-primary" />
-              <div className="absolute bottom-[40%] right-[10%] w-4 h-4 border-r-2 border-b-2 border-primary" />
-              
-              {/* Instruction text */}
-              <div className="absolute bottom-2 left-0 right-0 text-center">
-                <span className="text-xs bg-background/80 px-2 py-1 rounded text-muted-foreground">
-                  Position card ID in the highlighted area
-                </span>
-              </div>
-            </div>
+            )}
 
             {/* Hidden canvas for capture */}
             <canvas ref={canvasRef} className="hidden" />
