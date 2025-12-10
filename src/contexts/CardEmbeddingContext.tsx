@@ -93,7 +93,8 @@ export function CardEmbeddingProvider({ children }: { children: React.ReactNode 
             if (typeof row.embedding === 'string') {
               embedding = JSON.parse(row.embedding) as number[];
             } else if (Array.isArray(row.embedding)) {
-              embedding = row.embedding as unknown as number[];
+              // Create a new array to ensure no shared references
+              embedding = [...(row.embedding as unknown as number[])];
             }
           } catch (e) {
             console.warn(`[CardEmbeddingContext] Failed to parse embedding for ${row.card_id}:`, e);
@@ -113,10 +114,19 @@ export function CardEmbeddingProvider({ children }: { children: React.ReactNode 
           setName: row.set_name || undefined,
           rarity: row.rarity || undefined,
           artUrl: row.art_url || '',
-          embedding,
+          embedding: [...embedding], // Clone to ensure distinct arrays
         });
         
         setProgress({ loaded: embeddedCards.length, total });
+      }
+      
+      // Log diagnostic info for first 3 cards to verify distinct embeddings
+      if (embeddedCards.length >= 3) {
+        console.log('[CardEmbeddingContext] Embedding samples:');
+        for (let i = 0; i < 3; i++) {
+          const card = embeddedCards[i];
+          console.log(`  ${card.cardId}: [${card.embedding.slice(0, 5).map(v => v.toFixed(4)).join(', ')}...]`);
+        }
       }
       
       console.log(`[CardEmbeddingContext] Loaded ${embeddedCards.length} cards with embeddings`);

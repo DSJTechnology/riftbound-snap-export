@@ -158,7 +158,12 @@ export function useEmbeddingScanner({
       setBestScore(bestSimilarity);
       setMatchCandidates(candidates);
 
-      console.log(`[EmbeddingScanner] Best: ${best?.cardId} (score: ${bestSimilarity?.toFixed(3)})`);
+      // Log top 5 matches for debugging
+      console.log('[EmbeddingScanner] Top matches:', topMatches.slice(0, 5).map(m => ({
+        id: m.item.cardId,
+        name: m.item.name,
+        score: m.score.toFixed(4),
+      })));
 
       return { bestMatch: best, bestScore: bestSimilarity, candidates, quality };
     } catch (err) {
