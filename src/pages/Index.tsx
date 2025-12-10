@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { ScanLine, ListChecks, Download, Trash2, AlertTriangle, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { CardScanner } from '@/components/CardScanner';
+import { AutoCardScanner } from '@/components/AutoCardScanner';
 import { CardSearch } from '@/components/CardSearch';
 import { AddCardDialog } from '@/components/AddCardDialog';
 import { CollectionList } from '@/components/CollectionList';
@@ -36,11 +36,10 @@ const Index = () => {
     stats,
   } = useCollection();
 
-  // Handle card detected from scanner
+  // Handle card detected from auto-scanner - auto-add with Normal=1
   const handleCardDetected = useCallback((card: CardData) => {
-    setPendingCard(card);
-    toast.success(`Detected: ${card.name} (${card.cardId})`);
-  }, []);
+    addCard(card, 1, 0); // Auto-add 1 normal copy
+  }, [addCard]);
 
   // Handle scan failure - show manual search
   const handleScanFailed = useCallback(() => {
@@ -150,11 +149,11 @@ const Index = () => {
 
             {/* Scanner Section */}
             <section>
-              <h2 className="text-base font-semibold text-foreground mb-1">Scan Card</h2>
+              <h2 className="text-base font-semibold text-foreground mb-1">Auto-Scan Cards</h2>
               <p className="text-sm text-muted-foreground mb-4">
-                Position the card ID (e.g., OGN-001) in the frame
+                Hold card steady for 1-2 seconds to auto-add
               </p>
-              <CardScanner 
+              <AutoCardScanner 
                 onCardDetected={handleCardDetected}
                 onScanFailed={handleScanFailed}
               />
