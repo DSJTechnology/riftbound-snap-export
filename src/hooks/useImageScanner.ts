@@ -274,11 +274,17 @@ export function useImageScanner({
 
   // Manual scan - always scans and shows confirmation for best match
   const manualScan = useCallback(() => {
-    if (!isStreaming || !isVideoReady || !isIndexReady) return;
+    console.log('[ImageScanner] Manual scan triggered', { isStreaming, isVideoReady, isIndexReady, cardIndexLength: cardIndex.length });
+    
+    if (!isStreaming || !isVideoReady || !isIndexReady) {
+      console.log('[ImageScanner] Manual scan aborted - conditions not met');
+      return;
+    }
 
     setIsScanning(true);
     try {
       const result = scanFrameInternal();
+      console.log('[ImageScanner] Manual scan result:', result);
 
       // Always show confirmation modal for manual scan if we have a match
       if (result?.bestMatch && result.bestDistance !== null) {
@@ -287,7 +293,7 @@ export function useImageScanner({
     } finally {
       setIsScanning(false);
     }
-  }, [isStreaming, isVideoReady, isIndexReady, scanFrameInternal]);
+  }, [isStreaming, isVideoReady, isIndexReady, scanFrameInternal, cardIndex.length]);
 
   const confirmPendingMatch = useCallback(() => {
     if (!pendingMatch) return;
