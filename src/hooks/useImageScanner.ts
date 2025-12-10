@@ -1,14 +1,14 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { CardData } from '@/data/cardDatabase';
-import { getImageHashFromCanvas, hammingDistanceHex, loadImageToCanvas, getImageHashFromUrl } from '@/utils/imageHash';
+import { getImageHashFromCanvas, hammingDistanceHex, getImageHashFromUrl } from '@/utils/imageHash';
 
 // Configuration constants
 const SCAN_INTERVAL_MS = 800; // How often to scan (ms)
 const HASH_BITS = 8; // 8x8 = 64 bits for hash
-const MAX_DISTANCE_AUTO_ADD = 10; // Auto-add if distance <= this (out of 64)
-const MAX_DISTANCE_SUGGESTION = 18; // Show as suggestion if distance <= this
-const DUPLICATE_COOLDOWN_MS = 3000; // Time before same card can be added again
+const MAX_DISTANCE_AUTO_CONFIRM = 8; // Trigger confirmation modal if distance <= this (out of 64)
+const DUPLICATE_COOLDOWN_MS = 3000; // Time before same card can trigger confirmation again
 const ART_URL_BASE = 'https://static.dotgg.gg/riftbound/cards';
+const HASH_CACHE_KEY = 'riftbound-card-hashes';
 
 export interface CardWithHash {
   cardId: string;
@@ -22,6 +22,16 @@ export interface CardWithHash {
 export interface ImageMatchResult {
   card: CardWithHash;
   distance: number;
+}
+
+export interface PendingMatch {
+  card: CardWithHash;
+  distance: number;
+}
+
+export interface RecentScan {
+  card: CardWithHash;
+  timestamp: number;
 }
 
 export interface UseImageScannerOptions {
@@ -45,12 +55,16 @@ export interface UseImageScannerReturn {
   matchCandidates: ImageMatchResult[];
   indexProgress: { loaded: number; total: number };
   error: string | null;
+  pendingMatch: PendingMatch | null;
+  recentScans: RecentScan[];
   openCamera: () => Promise<void>;
   closeCamera: () => void;
   toggleAutoScan: () => void;
   manualScan: () => Promise<void>;
   handleVideoReady: () => void;
   handleVideoError: () => void;
+  confirmPendingMatch: () => void;
+  cancelPendingMatch: () => void;
 }
 
 export function useImageScanner({
@@ -63,7 +77,7 @@ export function useImageScanner({
   const streamRef = useRef<MediaStream | null>(null);
   const scanIntervalRef = useRef<number | null>(null);
   const isScanningRef = useRef(false);
-  const lastAddedCardRef = useRef<{ cardId: string; timestamp: number } | null>(null);
+  const lastConfirmTriggerRef = useRef<{ cardId: string; timestamp: number } | null>(null);
 
   const [cardIndex, setCardIndex] = useState<CardWithHash[]>([]);
   const [isIndexReady, setIsIndexReady] = useState(false);
@@ -78,22 +92,37 @@ export function useImageScanner({
   const [bestDistance, setBestDistance] = useState<number | null>(null);
   const [matchCandidates, setMatchCandidates] = useState<ImageMatchResult[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [pendingMatch, setPendingMatch] = useState<PendingMatch | null>(null);
+  const [recentScans, setRecentScans] = useState<RecentScan[]>([]);
 
-  // Precompute hashes for all card art from dotGG
+  // Load cached hashes from localStorage and compute missing ones
   useEffect(() => {
     if (cards.length === 0) return;
 
     let cancelled = false;
 
     async function loadCardHashes() {
-      console.log(`[ImageScanner] Starting to hash ${cards.length} card images...`);
+      console.log(`[ImageScanner] Starting to load hashes for ${cards.length} cards...`);
       setIndexProgress({ loaded: 0, total: cards.length });
       setIsIndexReady(false);
 
+      // Try to load cached hashes
+      let cachedHashes: Record<string, string> = {};
+      try {
+        const cached = localStorage.getItem(HASH_CACHE_KEY);
+        if (cached) {
+          cachedHashes = JSON.parse(cached);
+          console.log(`[ImageScanner] Loaded ${Object.keys(cachedHashes).length} cached hashes`);
+        }
+      } catch (e) {
+        console.warn('[ImageScanner] Failed to load cached hashes:', e);
+      }
+
       const withHashes: CardWithHash[] = [];
+      const newHashes: Record<string, string> = { ...cachedHashes };
       let loadedCount = 0;
 
-      // Process in batches to avoid overwhelming the browser
+      // Process in batches
       const BATCH_SIZE = 10;
       
       for (let i = 0; i < cards.length; i += BATCH_SIZE) {
@@ -103,8 +132,22 @@ export function useImageScanner({
         const batchPromises = batch.map(async (card) => {
           const artUrl = `${ART_URL_BASE}/${card.cardId}.webp`;
           
+          // Check if hash is already cached
+          if (cachedHashes[card.cardId]) {
+            return {
+              cardId: card.cardId,
+              name: card.name,
+              setName: card.setName,
+              rarity: card.rarity,
+              artUrl,
+              hash: cachedHashes[card.cardId],
+            };
+          }
+
+          // Compute hash for missing card
           try {
             const hash = await getImageHashFromUrl(artUrl, HASH_BITS);
+            newHashes[card.cardId] = hash; // Add to cache
             return {
               cardId: card.cardId,
               name: card.name,
@@ -134,7 +177,15 @@ export function useImageScanner({
       }
 
       if (!cancelled) {
-        console.log(`[ImageScanner] Finished hashing ${withHashes.length} cards`);
+        // Save updated hashes to localStorage
+        try {
+          localStorage.setItem(HASH_CACHE_KEY, JSON.stringify(newHashes));
+          console.log(`[ImageScanner] Cached ${Object.keys(newHashes).length} hashes`);
+        } catch (e) {
+          console.warn('[ImageScanner] Failed to save hashes to localStorage:', e);
+        }
+
+        console.log(`[ImageScanner] Finished loading ${withHashes.length} cards`);
         setCardIndex(withHashes);
         setIsIndexReady(true);
       }
@@ -235,27 +286,16 @@ export function useImageScanner({
 
       console.log(`[ImageScanner] Hash: ${frameHash} | Best: ${best?.cardId} (dist: ${bestDist})`);
 
-      // Auto-add if distance is low enough
-      if (best && bestDist <= MAX_DISTANCE_AUTO_ADD) {
+      // Auto-trigger confirmation modal if distance is low enough
+      if (best && bestDist <= MAX_DISTANCE_AUTO_CONFIRM) {
         const now = Date.now();
-        const lastAdded = lastAddedCardRef.current;
+        const lastTrigger = lastConfirmTriggerRef.current;
         
-        // Check duplicate cooldown
-        if (!lastAdded || lastAdded.cardId !== best.cardId || now - lastAdded.timestamp >= DUPLICATE_COOLDOWN_MS) {
-          console.log(`[ImageScanner] Auto-adding card: ${best.name} (${best.cardId})`);
-          
-          lastAddedCardRef.current = { cardId: best.cardId, timestamp: now };
-          setLastDetectedId(best.cardId);
-          
-          // Convert to CardData format
-          const cardData: CardData = {
-            cardId: best.cardId,
-            name: best.name,
-            setName: best.setName || 'Unknown',
-            rarity: best.rarity,
-          };
-          
-          onCardConfirmed(cardData, best.cardId);
+        // Check duplicate cooldown - don't spam confirmation for same card
+        if (!lastTrigger || lastTrigger.cardId !== best.cardId || now - lastTrigger.timestamp >= DUPLICATE_COOLDOWN_MS) {
+          console.log(`[ImageScanner] Triggering confirmation for: ${best.name} (${best.cardId})`);
+          lastConfirmTriggerRef.current = { cardId: best.cardId, timestamp: now };
+          setPendingMatch({ card: best, distance: bestDist });
         }
       }
     } catch (err) {
@@ -264,7 +304,7 @@ export function useImageScanner({
       isScanningRef.current = false;
       setIsScanning(false);
     }
-  }, [cardIndex, onCardConfirmed]);
+  }, [cardIndex]);
 
   // Start/stop auto-scan loop
   useEffect(() => {
@@ -341,7 +381,40 @@ export function useImageScanner({
   const manualScan = useCallback(async () => {
     if (!isStreaming || !isVideoReady || !isIndexReady) return;
     await scanFrame();
-  }, [isStreaming, isVideoReady, isIndexReady, scanFrame]);
+    // After manual scan, always show confirmation for best match if found
+    if (bestMatch && bestDistance !== null) {
+      setPendingMatch({ card: bestMatch, distance: bestDistance });
+    }
+  }, [isStreaming, isVideoReady, isIndexReady, scanFrame, bestMatch, bestDistance]);
+
+  const confirmPendingMatch = useCallback(() => {
+    if (!pendingMatch) return;
+    
+    const { card } = pendingMatch;
+    
+    // Add to recent scans
+    setRecentScans(prev => {
+      const next = [{ card, timestamp: Date.now() }, ...prev];
+      return next.slice(0, 5); // Keep last 5
+    });
+    
+    setLastDetectedId(card.cardId);
+    
+    // Convert to CardData format and confirm
+    const cardData: CardData = {
+      cardId: card.cardId,
+      name: card.name,
+      setName: card.setName || 'Unknown',
+      rarity: card.rarity,
+    };
+    
+    onCardConfirmed(cardData, card.cardId);
+    setPendingMatch(null);
+  }, [pendingMatch, onCardConfirmed]);
+
+  const cancelPendingMatch = useCallback(() => {
+    setPendingMatch(null);
+  }, []);
 
   const handleVideoReady = useCallback(() => {
     setIsVideoReady(true);
@@ -368,11 +441,15 @@ export function useImageScanner({
     matchCandidates,
     indexProgress,
     error,
+    pendingMatch,
+    recentScans,
     openCamera,
     closeCamera,
     toggleAutoScan,
     manualScan,
     handleVideoReady,
     handleVideoError,
+    confirmPendingMatch,
+    cancelPendingMatch,
   };
 }
