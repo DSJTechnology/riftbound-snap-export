@@ -1,9 +1,8 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Camera, X, Loader2, ScanLine, AlertCircle, Search, Zap, ZapOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Switch } from '@/components/ui/switch';
 import { CardData } from '@/data/cardDatabase';
-import { useCardDatabase, createCardDatabaseHelpers } from '@/contexts/CardDatabaseContext';
+import { useCardDatabase, createCardDatabaseHelpers, FuzzyMatchResult } from '@/contexts/CardDatabaseContext';
 import { useAutoScanner } from '@/hooks/useAutoScanner';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
@@ -16,8 +15,11 @@ interface AutoCardScannerProps {
 export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScannerProps) {
   const { cards } = useCardDatabase();
   const cardHelpers = useMemo(() => createCardDatabaseHelpers(cards), [cards]);
+  const [suggestions, setSuggestions] = useState<FuzzyMatchResult[]>([]);
+  const [rawOcrText, setRawOcrText] = useState<string>('');
 
   const handleCardConfirmed = (card: CardData, cardId: string) => {
+    setSuggestions([]); // Clear suggestions
     onCardDetected(card);
     
     // Show toast with undo option
@@ -27,7 +29,6 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
         action: {
           label: 'Undo',
           onClick: () => {
-            // The parent component should handle undo via collection state
             toast.info('Use the collection list to adjust quantities');
           },
         },
@@ -41,6 +42,22 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
     }
   };
 
+  const handleSuggestionsFound = (newSuggestions: FuzzyMatchResult[], rawText: string) => {
+    setSuggestions(newSuggestions);
+    setRawOcrText(rawText);
+  };
+
+  const handleSelectSuggestion = (card: CardData) => {
+    setSuggestions([]);
+    setRawOcrText('');
+    handleCardConfirmed(card, card.cardId);
+  };
+
+  const handleDismissSuggestions = () => {
+    setSuggestions([]);
+    setRawOcrText('');
+  };
+
   const {
     videoRef,
     canvasRef,
@@ -51,6 +68,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
     autoScanEnabled,
     lastDetectedId,
     currentCandidate,
+    lastOcrText,
     error,
     openCamera,
     closeCamera,
@@ -60,7 +78,9 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
     handleVideoError,
   } = useAutoScanner({
     onCardConfirmed: handleCardConfirmed,
+    onSuggestionsFound: handleSuggestionsFound,
     findCardById: cardHelpers.findCardById,
+    fuzzyMatchCardId: cardHelpers.fuzzyMatchCardId,
   });
 
   return (
@@ -99,6 +119,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-muted-foreground">
             <Camera className="w-16 h-16 opacity-30" />
             <span className="text-sm">Camera preview will appear here</span>
+            <span className="text-xs opacity-60">{cards.length} cards in database</span>
           </div>
         )}
 
@@ -168,9 +189,51 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
                 </>
               )}
             </div>
+
+            {/* OCR Debug info (bottom) */}
+            {lastOcrText && (
+              <div className="absolute bottom-3 left-3 right-3 bg-black/80 px-2 py-1 rounded text-xs text-white/70 font-mono truncate">
+                OCR: {lastOcrText}
+              </div>
+            )}
           </div>
         )}
       </div>
+
+      {/* Suggestions Panel */}
+      {suggestions.length > 0 && (
+        <div className="p-4 rounded-lg bg-accent/50 border border-accent space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium">
+              No exact match for "{rawOcrText}". Did you mean:
+            </p>
+            <Button variant="ghost" size="sm" onClick={handleDismissSuggestions}>
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
+          <div className="grid gap-2">
+            {suggestions.slice(0, 3).map((result) => (
+              <Button
+                key={result.card.cardId}
+                variant="outline"
+                className="justify-start h-auto py-2 px-3"
+                onClick={() => handleSelectSuggestion(result.card)}
+              >
+                <div className="flex flex-col items-start text-left">
+                  <span className="font-medium">{result.card.name}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {result.card.cardId} • {result.card.setName} • {Math.round(result.score * 100)}% match
+                  </span>
+                </div>
+              </Button>
+            ))}
+          </div>
+          <Button variant="link" size="sm" className="px-0" onClick={onScanFailed}>
+            <Search className="w-4 h-4 mr-1" />
+            Search manually instead
+          </Button>
+        </div>
+      )}
 
       {/* Control Buttons */}
       <div className="flex gap-3">
@@ -225,26 +288,26 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
             </Button>
 
             {/* Manual scan button (backup) */}
-            {!autoScanEnabled && (
-              <Button
-                onClick={manualScan}
-                disabled={isScanning || !isVideoReady}
-                className="h-14"
-                size="lg"
-              >
-                {isScanning ? (
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                ) : (
-                  <ScanLine className="w-5 h-5" />
-                )}
-              </Button>
-            )}
+            <Button
+              onClick={manualScan}
+              disabled={isScanning || !isVideoReady}
+              variant="outline"
+              className="h-14"
+              size="lg"
+              title="Manual Scan"
+            >
+              {isScanning ? (
+                <Loader2 className="w-5 h-5 animate-spin" />
+              ) : (
+                <ScanLine className="w-5 h-5" />
+              )}
+            </Button>
           </>
         )}
       </div>
 
       {/* Last detected ID feedback */}
-      {lastDetectedId && !error && (
+      {lastDetectedId && !error && suggestions.length === 0 && (
         <div className="text-center p-3 rounded-lg bg-primary/10 border border-primary/20">
           <p className="text-sm text-muted-foreground">
             Last added: <span className="font-mono text-primary font-bold">{lastDetectedId}</span>
@@ -272,9 +335,9 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
       )}
 
       {/* Helper text */}
-      {isStreaming && isVideoReady && (
+      {isStreaming && isVideoReady && suggestions.length === 0 && (
         <p className="text-center text-xs text-muted-foreground">
-          Place the card so the set code is inside the frame and hold still for 1-2 seconds
+          Place the card so the set code (e.g., OGN-001) is visible and hold still for 1-2 seconds
         </p>
       )}
     </div>

@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { createWorker, Worker } from 'tesseract.js';
 import { CardData } from '@/data/cardDatabase';
+import { FuzzyMatchResult } from '@/contexts/CardDatabaseContext';
 
 // Tesseract PSM values as strings
 const PSM_SINGLE_LINE = '7';
@@ -13,16 +14,19 @@ interface DetectionEntry {
 }
 
 // Configuration constants - easily adjustable
-const SCAN_INTERVAL_MS = 600; // How often to scan (ms)
-const DETECTION_WINDOW_MS = 2000; // Time window for multi-frame confirmation
+const SCAN_INTERVAL_MS = 800; // How often to scan (ms)
+const DETECTION_WINDOW_MS = 2500; // Time window for multi-frame confirmation
 const MIN_DETECTIONS_REQUIRED = 2; // Minimum detections to confirm
-const MIN_CONFIDENCE_THRESHOLD = 55; // Minimum average confidence %
+const MIN_CONFIDENCE_THRESHOLD = 45; // Minimum average confidence %
 const DUPLICATE_COOLDOWN_MS = 3000; // Time before same card can be added again
 const CARD_ID_REGEX = /[A-Z]{2,4}-\d{3}/g;
+const FUZZY_MATCH_THRESHOLD = 0.6; // Minimum score to auto-accept
 
 export interface UseAutoScannerOptions {
   onCardConfirmed: (card: CardData, cardId: string) => void;
+  onSuggestionsFound: (suggestions: FuzzyMatchResult[], rawText: string) => void;
   findCardById: (cardId: string) => CardData | undefined;
+  fuzzyMatchCardId: (rawText: string) => FuzzyMatchResult[];
   enabled?: boolean;
 }
 
@@ -36,6 +40,7 @@ export interface UseAutoScannerReturn {
   autoScanEnabled: boolean;
   lastDetectedId: string | null;
   currentCandidate: string | null;
+  lastOcrText: string | null;
   error: string | null;
   openCamera: () => Promise<void>;
   closeCamera: () => void;
@@ -47,7 +52,9 @@ export interface UseAutoScannerReturn {
 
 export function useAutoScanner({
   onCardConfirmed,
+  onSuggestionsFound,
   findCardById,
+  fuzzyMatchCardId,
   enabled = true,
 }: UseAutoScannerOptions): UseAutoScannerReturn {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -66,6 +73,7 @@ export function useAutoScanner({
   const [autoScanEnabled, setAutoScanEnabled] = useState(true);
   const [lastDetectedId, setLastDetectedId] = useState<string | null>(null);
   const [currentCandidate, setCurrentCandidate] = useState<string | null>(null);
+  const [lastOcrText, setLastOcrText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Initialize Tesseract worker with optimized settings
@@ -74,8 +82,15 @@ export function useAutoScanner({
 
     const initWorker = async () => {
       try {
+        console.log('[OCR] Initializing Tesseract worker...');
         const tesseractWorker = await createWorker('eng', 1, {
-          logger: () => {}, // Suppress logs
+          logger: (m) => {
+            if (m.status === 'recognizing text') {
+              // Silent during recognition
+            } else {
+              console.log('[OCR] Worker:', m.status);
+            }
+          },
         });
 
         // Configure for single-line alphanumeric card IDs
@@ -87,9 +102,10 @@ export function useAutoScanner({
         if (mounted) {
           workerRef.current = tesseractWorker;
           setIsWorkerReady(true);
+          console.log('[OCR] Tesseract worker ready');
         }
       } catch (err) {
-        console.error('Failed to initialize OCR:', err);
+        console.error('[OCR] Failed to initialize:', err);
         if (mounted) {
           setError('OCR initialization failed. Please refresh the page.');
         }
@@ -120,8 +136,7 @@ export function useAutoScanner({
 
   // Preprocess image for better OCR accuracy
   const preprocessImage = useCallback((
-    sourceCanvas: HTMLCanvasElement,
-    ctx: CanvasRenderingContext2D
+    sourceCanvas: HTMLCanvasElement
   ): HTMLCanvasElement => {
     const width = sourceCanvas.width;
     const height = sourceCanvas.height;
@@ -206,10 +221,10 @@ export function useAutoScanner({
   // Try OCR on both normal and 180° rotated versions
   const runOCRWithRotation = useCallback(async (
     canvas: HTMLCanvasElement
-  ): Promise<{ cardId: string | null; confidence: number }> => {
-    if (!workerRef.current) return { cardId: null, confidence: 0 };
+  ): Promise<{ text: string; cardId: string | null; confidence: number }> => {
+    if (!workerRef.current) return { text: '', cardId: null, confidence: 0 };
 
-    const tryOCR = async (rotated: boolean): Promise<{ cardId: string | null; confidence: number }> => {
+    const tryOCR = async (rotated: boolean): Promise<{ text: string; cardId: string | null; confidence: number }> => {
       let targetCanvas = canvas;
 
       if (rotated) {
@@ -228,21 +243,25 @@ export function useAutoScanner({
 
       try {
         const { data } = await workerRef.current!.recognize(targetCanvas);
-        const text = data.text.toUpperCase();
+        const rawText = data.text.trim();
+        const text = rawText.toUpperCase();
         const matches = text.match(CARD_ID_REGEX);
 
+        console.log(`[OCR] ${rotated ? 'Rotated' : 'Normal'} - Raw: "${rawText}" | Confidence: ${data.confidence?.toFixed(1)}%`);
+
         if (matches && matches.length > 0) {
-          // Return the first valid match with confidence
           return {
+            text: rawText,
             cardId: matches[0],
             confidence: data.confidence || 0,
           };
         }
-      } catch (err) {
-        console.error('OCR error:', err);
-      }
 
-      return { cardId: null, confidence: 0 };
+        return { text: rawText, cardId: null, confidence: data.confidence || 0 };
+      } catch (err) {
+        console.error('[OCR] Recognition error:', err);
+        return { text: '', cardId: null, confidence: 0 };
+      }
     };
 
     // Try normal orientation first
@@ -253,11 +272,12 @@ export function useAutoScanner({
 
     // Try rotated if normal didn't work well
     const rotatedResult = await tryOCR(true);
-    if (rotatedResult.confidence > normalResult.confidence) {
+    if (rotatedResult.cardId && rotatedResult.confidence > normalResult.confidence) {
       return rotatedResult;
     }
 
-    return normalResult;
+    // Return best result even if no card ID found
+    return normalResult.confidence >= rotatedResult.confidence ? normalResult : rotatedResult;
   }, []);
 
   // Process detection buffer for multi-frame confirmation
@@ -291,17 +311,46 @@ export function useAutoScanner({
             continue; // Skip - recently added
           }
 
-          // Confirmed! Look up the card
-          const card = findCardById(cardId);
-          if (card) {
+          console.log(`[Scanner] Card confirmed: ${cardId} (avg confidence: ${avgConfidence.toFixed(1)}%)`);
+
+          // Try exact match first
+          const exactCard = findCardById(cardId);
+          if (exactCard) {
             // Clear buffer for this card
             detectionBufferRef.current = detectionBufferRef.current.filter(e => e.cardId !== cardId);
             lastAddedCardRef.current = { cardId, timestamp: now };
             setLastDetectedId(cardId);
             setCurrentCandidate(null);
-            onCardConfirmed(card, cardId);
+            onCardConfirmed(exactCard, cardId);
             return;
           }
+
+          // Try fuzzy match
+          const fuzzyResults = fuzzyMatchCardId(cardId);
+          console.log(`[Scanner] Fuzzy results for "${cardId}":`, fuzzyResults.map(r => `${r.card.cardId} (${r.score.toFixed(2)})`));
+          
+          if (fuzzyResults.length > 0) {
+            const bestMatch = fuzzyResults[0];
+            
+            if (bestMatch.score >= FUZZY_MATCH_THRESHOLD) {
+              // Good enough match - auto-accept
+              detectionBufferRef.current = detectionBufferRef.current.filter(e => e.cardId !== cardId);
+              lastAddedCardRef.current = { cardId: bestMatch.card.cardId, timestamp: now };
+              setLastDetectedId(bestMatch.card.cardId);
+              setCurrentCandidate(null);
+              onCardConfirmed(bestMatch.card, bestMatch.card.cardId);
+              return;
+            } else if (fuzzyResults.length > 0) {
+              // Show suggestions to user
+              console.log(`[Scanner] Low confidence match, showing suggestions`);
+              onSuggestionsFound(fuzzyResults, cardId);
+              detectionBufferRef.current = []; // Clear buffer to avoid repeat suggestions
+              return;
+            }
+          }
+          
+          // No match found
+          console.log(`[Scanner] No match found for "${cardId}" in database`);
         }
       }
     }
@@ -311,7 +360,7 @@ export function useAutoScanner({
       const topCandidate = [...cardCounts.entries()].sort((a, b) => b[1].count - a[1].count)[0];
       setCurrentCandidate(topCandidate[0]);
     }
-  }, [findCardById, onCardConfirmed]);
+  }, [findCardById, fuzzyMatchCardId, onCardConfirmed, onSuggestionsFound]);
 
   // Single scan frame
   const scanFrame = useCallback(async () => {
@@ -340,8 +389,13 @@ export function useAutoScanner({
       ctx.drawImage(video, 0, 0);
 
       // Preprocess and run OCR
-      const preprocessed = preprocessImage(canvas, ctx);
+      const preprocessed = preprocessImage(canvas);
       const result = await runOCRWithRotation(preprocessed);
+
+      // Update last OCR text for debugging
+      if (result.text) {
+        setLastOcrText(result.text);
+      }
 
       if (result.cardId) {
         // Add to detection buffer
@@ -355,7 +409,7 @@ export function useAutoScanner({
         processDetectionBuffer();
       }
     } catch (err) {
-      console.error('Scan frame error:', err);
+      console.error('[Scanner] Scan frame error:', err);
     } finally {
       isScanningRef.current = false;
       setIsScanning(false);
@@ -365,9 +419,11 @@ export function useAutoScanner({
   // Start/stop auto-scan loop
   useEffect(() => {
     if (enabled && autoScanEnabled && isVideoReady && isWorkerReady) {
+      console.log('[Scanner] Starting auto-scan loop');
       scanIntervalRef.current = window.setInterval(scanFrame, SCAN_INTERVAL_MS);
     } else {
       if (scanIntervalRef.current) {
+        console.log('[Scanner] Stopping auto-scan loop');
         clearInterval(scanIntervalRef.current);
         scanIntervalRef.current = null;
       }
@@ -387,8 +443,10 @@ export function useAutoScanner({
       setIsVideoReady(false);
       setLastDetectedId(null);
       setCurrentCandidate(null);
+      setLastOcrText(null);
       detectionBufferRef.current = [];
 
+      console.log('[Camera] Requesting camera access...');
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: 'environment' },
@@ -400,13 +458,15 @@ export function useAutoScanner({
 
       streamRef.current = mediaStream;
       setIsStreaming(true);
+      console.log('[Camera] Stream acquired');
 
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
         await videoRef.current.play();
+        console.log('[Camera] Video playing');
       }
     } catch (err) {
-      console.error('Camera access error:', err);
+      console.error('[Camera] Access error:', err);
       if (err instanceof Error) {
         if (err.name === 'NotAllowedError') {
           setError('Camera access denied. Please allow camera access in your browser settings.');
@@ -422,6 +482,7 @@ export function useAutoScanner({
   }, []);
 
   const closeCamera = useCallback(() => {
+    console.log('[Camera] Closing camera');
     if (scanIntervalRef.current) {
       clearInterval(scanIntervalRef.current);
       scanIntervalRef.current = null;
@@ -437,6 +498,7 @@ export function useAutoScanner({
     setIsVideoReady(false);
     setLastDetectedId(null);
     setCurrentCandidate(null);
+    setLastOcrText(null);
     setError(null);
     detectionBufferRef.current = [];
   }, []);
@@ -452,6 +514,7 @@ export function useAutoScanner({
   const handleVideoReady = useCallback(() => {
     if (videoRef.current && videoRef.current.readyState >= 2) {
       setIsVideoReady(true);
+      console.log('[Camera] Video ready');
     }
   }, []);
 
@@ -470,6 +533,7 @@ export function useAutoScanner({
     autoScanEnabled,
     lastDetectedId,
     currentCandidate,
+    lastOcrText,
     error,
     openCamera,
     closeCamera,
