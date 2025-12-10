@@ -2,10 +2,11 @@ import { useMemo, useState } from 'react';
 import { Camera, X, Loader2, ScanLine, AlertCircle, Search, Zap, ZapOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { CardData } from '@/data/cardDatabase';
-import { useCardDatabase, createCardDatabaseHelpers, FuzzyMatchResult } from '@/contexts/CardDatabaseContext';
-import { useAutoScanner } from '@/hooks/useAutoScanner';
+import { useCardDatabase } from '@/contexts/CardDatabaseContext';
+import { useImageScanner, CardWithHash } from '@/hooks/useImageScanner';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import { Progress } from '@/components/ui/progress';
 
 interface AutoCardScannerProps {
   onCardDetected: (card: CardData) => void;
@@ -14,12 +15,8 @@ interface AutoCardScannerProps {
 
 export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScannerProps) {
   const { cards } = useCardDatabase();
-  const cardHelpers = useMemo(() => createCardDatabaseHelpers(cards), [cards]);
-  const [suggestions, setSuggestions] = useState<FuzzyMatchResult[]>([]);
-  const [rawOcrText, setRawOcrText] = useState<string>('');
 
   const handleCardConfirmed = (card: CardData, cardId: string) => {
-    setSuggestions([]); // Clear suggestions
     onCardDetected(card);
     
     // Show toast with undo option
@@ -42,37 +39,30 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
     }
   };
 
-  const handleSuggestionsFound = (newSuggestions: FuzzyMatchResult[], rawText: string) => {
-    setSuggestions(newSuggestions);
-    setRawOcrText(rawText);
-  };
-
-  const handleSelectSuggestion = (card: CardData) => {
-    setSuggestions([]);
-    setRawOcrText('');
-    handleCardConfirmed(card, card.cardId);
-  };
-
-  const handleDismissSuggestions = () => {
-    setSuggestions([]);
-    setRawOcrText('');
+  const handleSelectCard = (cardWithHash: CardWithHash) => {
+    const cardData: CardData = {
+      cardId: cardWithHash.cardId,
+      name: cardWithHash.name,
+      setName: cardWithHash.setName || 'Unknown',
+      rarity: cardWithHash.rarity,
+    };
+    handleCardConfirmed(cardData, cardWithHash.cardId);
   };
 
   const {
     videoRef,
     canvasRef,
-    isWorkerReady,
+    isIndexReady,
     isStreaming,
     isVideoReady,
     isScanning,
     autoScanEnabled,
     lastDetectedId,
-    currentCandidate,
-    lastOcrText,
-    lastOcrConfidence,
-    recognizedCard,
-    matchScore,
+    lastHash,
+    bestMatch,
+    bestDistance,
     matchCandidates,
+    indexProgress,
     error,
     openCamera,
     closeCamera,
@@ -80,15 +70,40 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
     manualScan,
     handleVideoReady,
     handleVideoError,
-  } = useAutoScanner({
+  } = useImageScanner({
+    cards,
     onCardConfirmed: handleCardConfirmed,
-    onSuggestionsFound: handleSuggestionsFound,
-    findCardById: cardHelpers.findCardById,
-    fuzzyMatchCardId: cardHelpers.fuzzyMatchCardId,
   });
+
+  // Get match quality
+  const getMatchQuality = (distance: number | null): 'excellent' | 'good' | 'fair' | 'poor' | 'none' => {
+    if (distance === null) return 'none';
+    if (distance <= 8) return 'excellent';
+    if (distance <= 12) return 'good';
+    if (distance <= 18) return 'fair';
+    return 'poor';
+  };
+
+  const matchQuality = getMatchQuality(bestDistance);
 
   return (
     <div className="space-y-4">
+      {/* Index loading progress */}
+      {!isIndexReady && cards.length > 0 && (
+        <div className="p-4 rounded-lg bg-accent/50 border border-accent space-y-2">
+          <div className="flex items-center justify-between text-sm">
+            <span className="font-medium">Loading card images...</span>
+            <span className="text-muted-foreground">
+              {indexProgress.loaded} / {indexProgress.total}
+            </span>
+          </div>
+          <Progress value={(indexProgress.loaded / Math.max(indexProgress.total, 1)) * 100} />
+          <p className="text-xs text-muted-foreground">
+            First load may take a moment as we download and hash card art from dotGG
+          </p>
+        </div>
+      )}
+
       {/* Camera Preview Area */}
       <div 
         className={cn(
@@ -115,7 +130,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
           )}
         />
 
-        {/* Hidden canvas for OCR processing */}
+        {/* Hidden canvas for image processing */}
         <canvas ref={canvasRef} className="hidden" />
 
         {/* Placeholder when camera is off */}
@@ -124,6 +139,9 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
             <Camera className="w-16 h-16 opacity-30" />
             <span className="text-sm">Camera preview will appear here</span>
             <span className="text-xs opacity-60">{cards.length} cards in database</span>
+            {isIndexReady && (
+              <span className="text-xs text-primary">Image index ready</span>
+            )}
           </div>
         )}
 
@@ -141,11 +159,14 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
             {/* Dark overlay outside scan area */}
             <div className="absolute inset-0 bg-black/40" />
             
-            {/* Centered portrait card frame (2.5:3.5 aspect ratio) */}
+            {/* Centered card frame for art alignment */}
             <div className="absolute inset-0 flex items-center justify-center">
               <div 
                 className={cn(
                   "relative bg-transparent border-2 rounded-lg transition-colors duration-300",
+                  matchQuality === 'excellent' ? "border-green-500" :
+                  matchQuality === 'good' ? "border-green-400" :
+                  matchQuality === 'fair' ? "border-yellow-500" :
                   isScanning ? "border-primary animate-pulse" : "border-primary/70",
                   "shadow-[0_0_0_9999px_rgba(0,0,0,0.4)]"
                 )}
@@ -164,15 +185,20 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
                   </div>
                 )}
                 
-                {/* Instruction / Status text */}
+                {/* Status text */}
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
-                  {currentCandidate ? (
-                    <span className="text-sm bg-primary/90 px-3 py-1.5 rounded-full text-primary-foreground font-medium animate-pulse">
-                      Detecting: {currentCandidate}
+                  {bestMatch && bestDistance !== null && bestDistance <= 18 ? (
+                    <span className={cn(
+                      "text-sm px-3 py-1.5 rounded-full font-medium",
+                      matchQuality === 'excellent' ? "bg-green-500/90 text-white" :
+                      matchQuality === 'good' ? "bg-green-400/90 text-white" :
+                      "bg-yellow-500/90 text-black"
+                    )}>
+                      {bestMatch.name}
                     </span>
                   ) : (
                     <span className="text-sm bg-background/90 px-3 py-1.5 rounded-full text-foreground font-medium">
-                      {autoScanEnabled ? 'Hold card steady' : 'Auto-scan paused'}
+                      {autoScanEnabled ? 'Position card art in frame' : 'Auto-scan paused'}
                     </span>
                   )}
                 </div>
@@ -194,53 +220,62 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
               )}
             </div>
 
-            {/* OCR Debug info (bottom) */}
-            <div className="absolute bottom-3 left-3 right-3 bg-black/90 px-3 py-2 rounded-lg text-xs space-y-1">
-              {/* Recognized card - always show if we have one */}
-              {recognizedCard ? (
-                <div className="text-green-400 font-semibold">
-                  Recognized: {recognizedCard.name} ({recognizedCard.cardId})
-                  {matchScore !== null && (
-                    <span className="ml-1 text-green-300">
-                      ({(matchScore * 100).toFixed(0)}% match)
-                    </span>
-                  )}
+            {/* Match info panel (bottom) */}
+            <div className="absolute bottom-3 left-3 right-3 bg-black/90 px-3 py-2 rounded-lg text-xs space-y-1 pointer-events-auto">
+              {/* Best match display */}
+              {bestMatch && bestDistance !== null ? (
+                <div className={cn(
+                  "font-semibold",
+                  matchQuality === 'excellent' ? "text-green-400" :
+                  matchQuality === 'good' ? "text-green-300" :
+                  matchQuality === 'fair' ? "text-yellow-400" :
+                  "text-red-400"
+                )}>
+                  {matchQuality === 'excellent' || matchQuality === 'good' ? '✓ ' : '? '}
+                  {bestMatch.name} ({bestMatch.cardId})
+                  {bestMatch.setName && <span className="text-white/60 ml-1">– {bestMatch.setName}</span>}
                 </div>
-              ) : lastOcrText ? (
-                <div className="text-yellow-400">
-                  No match found for: "{lastOcrText}"
+              ) : (
+                <div className="text-white/60">
+                  No match yet - position card in frame
                 </div>
-              ) : null}
+              )}
               
-              {/* Raw OCR info */}
-              {lastOcrText && (
+              {/* Distance/confidence indicator */}
+              {bestDistance !== null && (
                 <div className="flex justify-between items-center text-white/70 font-mono">
-                  <span className="truncate">OCR: {lastOcrText}</span>
-                  {lastOcrConfidence !== null && (
-                    <span className={cn(
-                      "ml-2 shrink-0 px-2 py-0.5 rounded",
-                      lastOcrConfidence >= 70 ? "bg-green-500/30 text-green-300" :
-                      lastOcrConfidence >= 50 ? "bg-yellow-500/30 text-yellow-300" :
-                      "bg-red-500/30 text-red-300"
-                    )}>
-                      {lastOcrConfidence.toFixed(0)}%
-                    </span>
-                  )}
+                  <span>Distance: {bestDistance} / 64</span>
+                  <span className={cn(
+                    "px-2 py-0.5 rounded",
+                    matchQuality === 'excellent' ? "bg-green-500/30 text-green-300" :
+                    matchQuality === 'good' ? "bg-green-400/30 text-green-300" :
+                    matchQuality === 'fair' ? "bg-yellow-500/30 text-yellow-300" :
+                    "bg-red-500/30 text-red-300"
+                  )}>
+                    {matchQuality === 'excellent' ? 'Excellent' :
+                     matchQuality === 'good' ? 'Good' :
+                     matchQuality === 'fair' ? 'Fair' : 'Poor'}
+                  </span>
                 </div>
               )}
 
-              {/* Suggestions if no confident match */}
-              {!recognizedCard && matchCandidates.length > 0 && (
+              {/* Top candidates for manual selection (when match is not excellent) */}
+              {matchCandidates.length > 0 && matchQuality !== 'excellent' && (
                 <div className="mt-1 pt-1 border-t border-white/20">
-                  <span className="text-white/60">Did you mean:</span>
+                  <span className="text-white/60">Tap to select:</span>
                   <div className="flex flex-wrap gap-1 mt-1">
-                    {matchCandidates.slice(0, 3).map((result) => (
+                    {matchCandidates.slice(0, 4).map((result) => (
                       <button
                         key={result.card.cardId}
-                        onClick={() => handleSelectSuggestion(result.card)}
-                        className="text-xs bg-primary/30 hover:bg-primary/50 text-primary-foreground px-2 py-0.5 rounded pointer-events-auto"
+                        onClick={() => handleSelectCard(result.card)}
+                        className={cn(
+                          "text-xs px-2 py-0.5 rounded",
+                          result.distance <= 10 ? "bg-green-500/30 hover:bg-green-500/50 text-green-200" :
+                          result.distance <= 15 ? "bg-yellow-500/30 hover:bg-yellow-500/50 text-yellow-200" :
+                          "bg-primary/30 hover:bg-primary/50 text-primary-foreground"
+                        )}
                       >
-                        {result.card.name} ({(result.score * 100).toFixed(0)}%)
+                        {result.card.name} ({result.distance})
                       </button>
                     ))}
                   </div>
@@ -251,54 +286,19 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
         )}
       </div>
 
-      {/* Suggestions Panel */}
-      {suggestions.length > 0 && (
-        <div className="p-4 rounded-lg bg-accent/50 border border-accent space-y-3">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-medium">
-              No exact match for "{rawOcrText}". Did you mean:
-            </p>
-            <Button variant="ghost" size="sm" onClick={handleDismissSuggestions}>
-              <X className="w-4 h-4" />
-            </Button>
-          </div>
-          <div className="grid gap-2">
-            {suggestions.slice(0, 3).map((result) => (
-              <Button
-                key={result.card.cardId}
-                variant="outline"
-                className="justify-start h-auto py-2 px-3"
-                onClick={() => handleSelectSuggestion(result.card)}
-              >
-                <div className="flex flex-col items-start text-left">
-                  <span className="font-medium">{result.card.name}</span>
-                  <span className="text-xs text-muted-foreground">
-                    {result.card.cardId} • {result.card.setName} • {Math.round(result.score * 100)}% match
-                  </span>
-                </div>
-              </Button>
-            ))}
-          </div>
-          <Button variant="link" size="sm" className="px-0" onClick={onScanFailed}>
-            <Search className="w-4 h-4 mr-1" />
-            Search manually instead
-          </Button>
-        </div>
-      )}
-
       {/* Control Buttons */}
       <div className="flex gap-3">
         {!isStreaming ? (
           <Button
             onClick={openCamera}
-            disabled={!isWorkerReady}
+            disabled={!isIndexReady}
             className="flex-1 h-14 text-base font-semibold"
             size="lg"
           >
-            {!isWorkerReady ? (
+            {!isIndexReady ? (
               <>
                 <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                Loading OCR...
+                Loading index... ({indexProgress.loaded}/{indexProgress.total})
               </>
             ) : (
               <>
@@ -338,7 +338,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
               )}
             </Button>
 
-            {/* Manual scan button (backup) */}
+            {/* Manual scan button */}
             <Button
               onClick={manualScan}
               disabled={isScanning || !isVideoReady}
@@ -358,7 +358,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
       </div>
 
       {/* Last detected ID feedback */}
-      {lastDetectedId && !error && suggestions.length === 0 && (
+      {lastDetectedId && !error && (
         <div className="text-center p-3 rounded-lg bg-primary/10 border border-primary/20">
           <p className="text-sm text-muted-foreground">
             Last added: <span className="font-mono text-primary font-bold">{lastDetectedId}</span>
@@ -386,9 +386,9 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
       )}
 
       {/* Helper text */}
-      {isStreaming && isVideoReady && suggestions.length === 0 && (
+      {isStreaming && isVideoReady && (
         <p className="text-center text-xs text-muted-foreground">
-          Place the card so the set code (e.g., OGN-001) is visible and hold still for 1-2 seconds
+          Position the card art within the frame. Lower distance = better match.
         </p>
       )}
     </div>
