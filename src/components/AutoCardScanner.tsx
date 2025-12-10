@@ -70,6 +70,9 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
     currentCandidate,
     lastOcrText,
     lastOcrConfidence,
+    recognizedCard,
+    matchScore,
+    matchCandidates,
     error,
     openCamera,
     closeCamera,
@@ -192,10 +195,27 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
             </div>
 
             {/* OCR Debug info (bottom) */}
-            {lastOcrText && (
-              <div className="absolute bottom-3 left-3 right-3 bg-black/90 px-3 py-2 rounded-lg text-xs text-white font-mono">
-                <div className="flex justify-between items-center">
-                  <span className="truncate">Detected: {lastOcrText}</span>
+            <div className="absolute bottom-3 left-3 right-3 bg-black/90 px-3 py-2 rounded-lg text-xs space-y-1">
+              {/* Recognized card - always show if we have one */}
+              {recognizedCard ? (
+                <div className="text-green-400 font-semibold">
+                  Recognized: {recognizedCard.name} ({recognizedCard.cardId})
+                  {matchScore !== null && (
+                    <span className="ml-1 text-green-300">
+                      ({(matchScore * 100).toFixed(0)}% match)
+                    </span>
+                  )}
+                </div>
+              ) : lastOcrText ? (
+                <div className="text-yellow-400">
+                  No match found for: "{lastOcrText}"
+                </div>
+              ) : null}
+              
+              {/* Raw OCR info */}
+              {lastOcrText && (
+                <div className="flex justify-between items-center text-white/70 font-mono">
+                  <span className="truncate">OCR: {lastOcrText}</span>
                   {lastOcrConfidence !== null && (
                     <span className={cn(
                       "ml-2 shrink-0 px-2 py-0.5 rounded",
@@ -207,8 +227,26 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
                     </span>
                   )}
                 </div>
-              </div>
-            )}
+              )}
+
+              {/* Suggestions if no confident match */}
+              {!recognizedCard && matchCandidates.length > 0 && (
+                <div className="mt-1 pt-1 border-t border-white/20">
+                  <span className="text-white/60">Did you mean:</span>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {matchCandidates.slice(0, 3).map((result) => (
+                      <button
+                        key={result.card.cardId}
+                        onClick={() => handleSelectSuggestion(result.card)}
+                        className="text-xs bg-primary/30 hover:bg-primary/50 text-primary-foreground px-2 py-0.5 rounded pointer-events-auto"
+                      >
+                        {result.card.name} ({(result.score * 100).toFixed(0)}%)
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
