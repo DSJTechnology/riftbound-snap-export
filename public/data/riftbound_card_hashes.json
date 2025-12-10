@@ -1,0 +1,20 @@
+[
+  {
+    "cardId": "OGN-001",
+    "name": "Blazing Scorcher",
+    "set": "Origins",
+    "setName": "Origins",
+    "rarity": "Rare",
+    "artUrl": "/riftbound/cards/OGN-001.webp",
+    "hash": "0000000000000000"
+  },
+  {
+    "cardId": "OGN-002",
+    "name": "Frost Warden",
+    "set": "Origins",
+    "setName": "Origins",
+    "rarity": "Common",
+    "artUrl": "/riftbound/cards/OGN-002.webp",
+    "hash": "0000000000000000"
+  }
+]
