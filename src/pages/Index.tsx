@@ -1,17 +1,21 @@
 import { useState, useCallback, useRef } from 'react';
-import { ScanLine, ListChecks, Download, Trash2, AlertTriangle } from 'lucide-react';
+import { ScanLine, ListChecks, Download, Trash2, AlertTriangle, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { CardScanner } from '@/components/CardScanner';
 import { CardSearch } from '@/components/CardSearch';
 import { AddCardDialog } from '@/components/AddCardDialog';
 import { CollectionList } from '@/components/CollectionList';
 import { ExportPanel } from '@/components/ExportPanel';
+import { CardDatabaseStatus } from '@/components/CardDatabaseStatus';
 import { useCollection } from '@/hooks/useCollection';
+import { useCardDatabase } from '@/contexts/CardDatabaseContext';
 import { CardData } from '@/data/cardDatabase';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 
-type Tab = 'scan' | 'collection' | 'export';
+
+
+type Tab = 'scan' | 'collection' | 'export' | 'settings';
 
 const Index = () => {
   const [activeTab, setActiveTab] = useState<Tab>('scan');
@@ -19,6 +23,7 @@ const Index = () => {
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [showManualSearch, setShowManualSearch] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const { cards } = useCardDatabase();
   
   const {
     collection,
@@ -75,6 +80,7 @@ const Index = () => {
     { id: 'scan' as Tab, label: 'Scan', icon: ScanLine },
     { id: 'collection' as Tab, label: 'Collection', icon: ListChecks, badge: stats.uniqueCards },
     { id: 'export' as Tab, label: 'Export', icon: Download },
+    { id: 'settings' as Tab, label: 'Settings', icon: Settings },
   ];
 
   return (
@@ -133,6 +139,15 @@ const Index = () => {
         {/* Scan Tab */}
         {activeTab === 'scan' && (
           <div className="space-y-6 animate-in">
+            {/* No cards warning */}
+            {cards.length === 0 && (
+              <div className="p-4 rounded-lg bg-amber-500/10 border border-amber-500/20 mb-4">
+                <p className="text-sm text-amber-500">
+                  No card data loaded. Go to Settings and tap "Update Card Database" first.
+                </p>
+              </div>
+            )}
+
             {/* Scanner Section */}
             <section>
               <h2 className="text-base font-semibold text-foreground mb-1">Scan Card</h2>
@@ -224,6 +239,20 @@ const Index = () => {
               exportSettings={exportSettings}
               onSettingsChange={setExportSettings}
             />
+          </div>
+        )}
+
+        {/* Settings Tab */}
+        {activeTab === 'settings' && (
+          <div className="space-y-6 animate-in">
+            <section>
+              <h2 className="text-base font-semibold text-foreground mb-4">Card Database</h2>
+              <CardDatabaseStatus />
+              <p className="text-xs text-muted-foreground mt-3">
+                Update the card database to get the latest Riftbound cards from DotGG.
+                The database is saved locally for offline use.
+              </p>
+            </section>
           </div>
         )}
       </main>

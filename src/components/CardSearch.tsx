@@ -1,8 +1,8 @@
 import { useState, useMemo, useRef, useEffect, RefObject } from 'react';
 import { Search, Plus, X } from 'lucide-react';
 import { Input } from '@/components/ui/input';
-import { Button } from '@/components/ui/button';
-import { CardData, searchCardsByName } from '@/data/cardDatabase';
+import { CardData } from '@/data/cardDatabase';
+import { useCardDatabase, createCardDatabaseHelpers } from '@/contexts/CardDatabaseContext';
 import { cn } from '@/lib/utils';
 
 interface CardSearchProps {
@@ -12,6 +12,9 @@ interface CardSearchProps {
 }
 
 export function CardSearch({ onCardSelect, autoFocus = false, inputRef: externalRef }: CardSearchProps) {
+  const { cards } = useCardDatabase();
+  const cardHelpers = useMemo(() => createCardDatabaseHelpers(cards), [cards]);
+  
   const [query, setQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const internalRef = useRef<HTMLInputElement>(null);
@@ -20,8 +23,8 @@ export function CardSearch({ onCardSelect, autoFocus = false, inputRef: external
 
   const results = useMemo(() => {
     if (query.length < 2) return [];
-    return searchCardsByName(query).slice(0, 10);
-  }, [query]);
+    return cardHelpers.searchCardsByName(query).slice(0, 10);
+  }, [query, cardHelpers]);
 
   useEffect(() => {
     if (autoFocus && inputRef.current) {
