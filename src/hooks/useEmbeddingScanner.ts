@@ -79,7 +79,7 @@ export function useEmbeddingScanner({
   const [isStreaming, setIsStreaming] = useState(false);
   const [isVideoReady, setIsVideoReady] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
-  const [autoScanEnabled, setAutoScanEnabled] = useState(true);
+  const [autoScanEnabled, setAutoScanEnabled] = useState(false);
   const [lastDetectedId, setLastDetectedId] = useState<string | null>(null);
   const [bestMatch, setBestMatch] = useState<EmbeddedCard | null>(null);
   const [bestScore, setBestScore] = useState<number | null>(null);
