@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import Fuse from 'fuse.js';
 import { CardData, cardDatabase as fallbackCards } from '@/data/cardDatabase';
 
 interface CardDatabaseState {
@@ -171,10 +172,82 @@ export function useCardDatabase() {
   return context;
 }
 
+export interface FuzzyMatchResult {
+  card: CardData;
+  score: number;
+}
+
 // Helper functions that use the context cards
 export function createCardDatabaseHelpers(cards: CardData[]) {
+  // Create Fuse instances for fuzzy search
+  const fuseById = new Fuse(cards, {
+    keys: ['cardId'],
+    threshold: 0.3, // Allow ~30% difference for card IDs
+    includeScore: true,
+  });
+
+  const fuseByName = new Fuse(cards, {
+    keys: ['name'],
+    threshold: 0.4, // Allow ~40% difference for names
+    includeScore: true,
+  });
+
   const findCardById = (cardId: string): CardData | undefined => {
     return cards.find(card => card.cardId.toLowerCase() === cardId.toLowerCase());
+  };
+
+  // Fuzzy match card ID - returns best matches with scores
+  const fuzzyMatchCardId = (rawText: string): FuzzyMatchResult[] => {
+    // Normalize input: uppercase, remove non-alphanumeric except dashes
+    const normalized = rawText.toUpperCase().replace(/[^A-Z0-9-]/g, '');
+    
+    // Try exact match first
+    const exact = findCardById(normalized);
+    if (exact) {
+      return [{ card: exact, score: 1.0 }];
+    }
+
+    // Fuzzy search on card ID
+    const results = fuseById.search(normalized);
+    return results.slice(0, 5).map(r => ({
+      card: r.item,
+      score: 1 - (r.score || 0), // Convert Fuse score (lower is better) to our score (higher is better)
+    }));
+  };
+
+  // Fuzzy match card name - returns best matches with scores
+  const fuzzyMatchCardName = (rawText: string): FuzzyMatchResult[] => {
+    // Normalize: trim, remove excessive whitespace
+    const normalized = rawText.trim().replace(/\s+/g, ' ');
+    
+    // Try exact match first
+    const exact = cards.find(c => c.name.toLowerCase() === normalized.toLowerCase());
+    if (exact) {
+      return [{ card: exact, score: 1.0 }];
+    }
+
+    // Fuzzy search on name
+    const results = fuseByName.search(normalized);
+    return results.slice(0, 5).map(r => ({
+      card: r.item,
+      score: 1 - (r.score || 0),
+    }));
+  };
+
+  // Combined matching: tries ID pattern first, then name
+  const fuzzyMatch = (rawText: string): FuzzyMatchResult[] => {
+    const cardIdPattern = /[A-Z]{2,4}-\d{3}/i;
+    
+    if (cardIdPattern.test(rawText)) {
+      // Looks like a card ID
+      const match = rawText.match(cardIdPattern);
+      if (match) {
+        return fuzzyMatchCardId(match[0]);
+      }
+    }
+    
+    // Try as name
+    return fuzzyMatchCardName(rawText);
   };
 
   const searchCardsByName = (query: string): CardData[] => {
@@ -195,6 +268,9 @@ export function createCardDatabaseHelpers(cards: CardData[]) {
 
   return {
     findCardById,
+    fuzzyMatchCardId,
+    fuzzyMatchCardName,
+    fuzzyMatch,
     searchCardsByName,
     getAllSets,
     getCardsBySet,
