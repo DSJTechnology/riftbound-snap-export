@@ -29,12 +29,6 @@ const CARD_CROP = {
 
 const OUTPUT_SIZE = 224;
 
-// Augmentation settings
-const AUGMENTATION = {
-  ROTATIONS: [-5, 0, 5], // degrees
-  BRIGHTNESS_VARIANTS: [0.85, 1.0, 1.15], // multipliers
-};
-
 interface DotGGCard {
   id: string;
   name: string;
@@ -191,68 +185,9 @@ function cropToArtRegion(image: DecodedImage): DecodedImage {
   return { width: OUTPUT_SIZE, height: OUTPUT_SIZE, pixels: outPixels };
 }
 
-/**
- * Apply rotation to image (simple nearest-neighbor).
- */
-function rotateImage(image: DecodedImage, angleDegrees: number): DecodedImage {
-  if (angleDegrees === 0) return image;
-  
-  const { width, height, pixels } = image;
-  const angleRad = (angleDegrees * Math.PI) / 180;
-  const cos = Math.cos(angleRad);
-  const sin = Math.sin(angleRad);
-  
-  const outPixels = new Uint8Array(width * height * 4);
-  const centerX = width / 2;
-  const centerY = height / 2;
-  
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const dx = x - centerX;
-      const dy = y - centerY;
-      
-      const srcX = Math.round(centerX + dx * cos + dy * sin);
-      const srcY = Math.round(centerY - dx * sin + dy * cos);
-      
-      const outIdx = (y * width + x) * 4;
-      
-      if (srcX >= 0 && srcX < width && srcY >= 0 && srcY < height) {
-        const srcIdx = (srcY * width + srcX) * 4;
-        outPixels[outIdx] = pixels[srcIdx];
-        outPixels[outIdx + 1] = pixels[srcIdx + 1];
-        outPixels[outIdx + 2] = pixels[srcIdx + 2];
-        outPixels[outIdx + 3] = pixels[srcIdx + 3];
-      } else {
-        // Fill with average color for out-of-bounds
-        outPixels[outIdx] = 128;
-        outPixels[outIdx + 1] = 128;
-        outPixels[outIdx + 2] = 128;
-        outPixels[outIdx + 3] = 255;
-      }
-    }
-  }
-  
-  return { width, height, pixels: outPixels };
-}
-
-/**
- * Apply brightness adjustment.
- */
-function adjustBrightness(image: DecodedImage, factor: number): DecodedImage {
-  if (factor === 1.0) return image;
-  
-  const { width, height, pixels } = image;
-  const outPixels = new Uint8Array(pixels.length);
-  
-  for (let i = 0; i < pixels.length; i += 4) {
-    outPixels[i] = Math.min(255, Math.max(0, Math.round(pixels[i] * factor)));
-    outPixels[i + 1] = Math.min(255, Math.max(0, Math.round(pixels[i + 1] * factor)));
-    outPixels[i + 2] = Math.min(255, Math.max(0, Math.round(pixels[i + 2] * factor)));
-    outPixels[i + 3] = pixels[i + 3];
-  }
-  
-  return { width, height, pixels: outPixels };
-}
+// ============================================================
+// FEATURE EXTRACTION (matches client exactly)
+// ============================================================
 
 // ============================================================
 // FEATURE EXTRACTION (matches client exactly)
@@ -540,9 +475,9 @@ serve(async (req) => {
     
     console.log(`[sync-riftbound-cards] Parsed ${cards.length} cards`);
     
-    // Process cards in batches
+    // Process cards in batches - no augmentation for speed
     const results: CardWithEmbedding[] = [];
-    const BATCH_SIZE = 3; // Smaller batches for augmented processing
+    const BATCH_SIZE = 10;
     let processed = 0;
     let failed = 0;
     
@@ -593,27 +528,13 @@ serve(async (req) => {
           // Crop to art region
           const croppedImage = cropToArtRegion(decodedImage);
           
-          // Generate augmented variants and extract embeddings
-          const augmentedEmbeddings: number[][] = [];
-          
-          for (const rotation of AUGMENTATION.ROTATIONS) {
-            const rotatedImage = rotateImage(croppedImage, rotation);
-            
-            for (const brightness of AUGMENTATION.BRIGHTNESS_VARIANTS) {
-              const adjustedImage = adjustBrightness(rotatedImage, brightness);
-              
-              const features = extractFeaturesFromPixels(
-                adjustedImage.pixels,
-                adjustedImage.width,
-                adjustedImage.height
-              );
-              const normalized = l2Normalize(features);
-              augmentedEmbeddings.push(normalized);
-            }
-          }
-          
-          // Average all augmented embeddings into a single robust embedding
-          const finalEmbedding = averageEmbeddings(augmentedEmbeddings);
+          // Extract features and normalize (no augmentation for speed)
+          const features = extractFeaturesFromPixels(
+            croppedImage.pixels,
+            croppedImage.width,
+            croppedImage.height
+          );
+          const finalEmbedding = l2Normalize(features);
           
           // Compute hash from the original cropped image (for backward compatibility)
           const hash = computeHashFromPixels(croppedImage.pixels, croppedImage.width, croppedImage.height);
@@ -644,13 +565,13 @@ serve(async (req) => {
         }
       }
       
-      if (processed % 20 === 0 || processed === cards.length) {
+      if (processed % 50 === 0 || i + BATCH_SIZE >= cards.length) {
         console.log(`[sync-riftbound-cards] Progress: ${processed}/${cards.length} (${failed} failed)`);
       }
     }
     
     // Upsert all cards to database
-    console.log(`[sync-riftbound-cards] Upserting ${results.length} cards with augmented embeddings...`);
+    console.log(`[sync-riftbound-cards] Upserting ${results.length} cards...`);
     
     const UPSERT_BATCH = 50;
     for (let i = 0; i < results.length; i += UPSERT_BATCH) {
@@ -664,7 +585,7 @@ serve(async (req) => {
       }
     }
     
-    console.log(`[sync-riftbound-cards] Sync complete! ${results.length} cards with augmented embeddings synced.`);
+    console.log(`[sync-riftbound-cards] Sync complete! ${results.length} cards synced.`);
     
     return new Response(
       JSON.stringify({
@@ -673,7 +594,6 @@ serve(async (req) => {
         synced: results.length,
         failed: failed,
         embeddingSize: EMBEDDING_SIZE,
-        augmentations: AUGMENTATION.ROTATIONS.length * AUGMENTATION.BRIGHTNESS_VARIANTS.length,
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
