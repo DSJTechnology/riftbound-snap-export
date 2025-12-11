@@ -94,9 +94,15 @@ serve(async (req: Request) => {
         const googleResponse = await fetch(googleUrl.toString());
         const googleData = await googleResponse.json();
 
+        console.log(`[training-search-images] Google response status: ${googleResponse.status}, items: ${googleData.items?.length || 0}, searchInfo:`, googleData.searchInformation);
+
         if (!googleResponse.ok) {
           console.error('[training-search-images] Google API error:', googleData);
           continue; // Try next query
+        }
+
+        if (!googleData.items || googleData.items.length === 0) {
+          console.log(`[training-search-images] No items in response. Full response keys:`, Object.keys(googleData));
         }
 
         // Parse and deduplicate results
