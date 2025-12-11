@@ -392,8 +392,8 @@ serve(async (req) => {
   }
 
   try {
-    const { offset = 0 } = await req.json().catch(() => ({}));
-    console.log(`[sync] Starting at offset ${offset}`);
+    const { offset = 0, setName, cardId } = await req.json().catch(() => ({}));
+    console.log(`[sync] Starting at offset ${offset}, setName: ${setName || 'all'}, cardId: ${cardId || 'none'}`);
     
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
@@ -412,20 +412,31 @@ serve(async (req) => {
     const rarityIndex = names.indexOf('rarity');
     const imageIndex = names.indexOf('image');
     
-    const allCards: DotGGCard[] = [];
+    let allCards: DotGGCard[] = [];
     for (const row of apiData.data) {
       if (!Array.isArray(row)) continue;
-      const cardId = row[idIndex];
+      const rowCardId = row[idIndex];
       const name = row[nameIndex];
-      if (cardId && name) {
+      if (rowCardId && name) {
         allCards.push({
-          id: String(cardId).trim().toUpperCase(),
+          id: String(rowCardId).trim().toUpperCase(),
           name: String(name).trim(),
           set_name: setNameIndex !== -1 && row[setNameIndex] ? String(row[setNameIndex]).trim() : 'Unknown',
           rarity: rarityIndex !== -1 && row[rarityIndex] ? String(row[rarityIndex]).trim() : null,
-          image: imageIndex !== -1 && row[imageIndex] ? row[imageIndex] : `https://static.dotgg.gg/riftbound/cards/${cardId}.webp`,
+          image: imageIndex !== -1 && row[imageIndex] ? row[imageIndex] : `https://static.dotgg.gg/riftbound/cards/${rowCardId}.webp`,
         });
       }
+    }
+    
+    // Filter by cardId (single card refresh)
+    if (cardId) {
+      allCards = allCards.filter(c => c.id === cardId.toUpperCase());
+      console.log(`[sync] Filtered to single card: ${cardId}, found: ${allCards.length}`);
+    }
+    // Filter by set name
+    else if (setName) {
+      allCards = allCards.filter(c => c.set_name === setName);
+      console.log(`[sync] Filtered to set "${setName}", found: ${allCards.length} cards`);
     }
     
     const cards = allCards.slice(offset, offset + BATCH_SIZE);
