@@ -7,12 +7,18 @@ import {
   normalizeCardFromVideoFrame, 
   extractArtRegion 
 } from '@/utils/cardNormalization';
+import { extractEmbeddingFromArtCanvas } from '@/utils/artEmbedding';
 import { 
-  extractEmbeddingFromArtCanvas, 
-  cosineSimilarity, 
-  findTopMatches 
-} from '@/utils/artEmbedding';
-import { SIMILARITY_THRESHOLDS } from '@/utils/embeddingConfig';
+  multiSignalMatch, 
+  quickVisualMatch,
+  MultiSignalMatch,
+  MultiSignalResult 
+} from '@/utils/multiSignalMatcher';
+import { storeScanFeedback } from '@/utils/feedbackCapture';
+import { 
+  SIMILARITY_THRESHOLDS,
+  getConfidenceLevel,
+} from '@/utils/embeddingConfig';
 
 // Configuration constants
 const SCAN_INTERVAL_MS = 800;
@@ -21,12 +27,20 @@ const DUPLICATE_COOLDOWN_MS = 3000;
 export interface EmbeddingMatchResult {
   card: EmbeddedCard;
   score: number;
+  visualScore?: number;
+  ocrScore?: number;
+  confidence?: 'excellent' | 'good' | 'fair' | 'low';
 }
 
 export interface PendingMatch {
   card: EmbeddedCard;
   score: number;
   candidates: EmbeddingMatchResult[];
+  ocrText?: string;
+  ocrConfidence?: number;
+  visualEmbedding?: number[];
+  needsConfirmation: boolean;
+  ambiguous: boolean;
 }
 
 export interface RecentScan {
@@ -37,6 +51,7 @@ export interface RecentScan {
 export interface UseEmbeddingScannerOptions {
   onCardConfirmed: (card: CardData, cardId: string) => void;
   enabled?: boolean;
+  enableOCR?: boolean; // Enable multi-signal matching with OCR
 }
 
 export interface UseEmbeddingScannerReturn {
@@ -63,7 +78,7 @@ export interface UseEmbeddingScannerReturn {
   manualScan: () => void;
   handleVideoReady: () => void;
   handleVideoError: () => void;
-  confirmPendingMatch: () => void;
+  confirmPendingMatch: (selectedCard?: EmbeddedCard) => void;
   selectCandidate: (card: EmbeddedCard, score: number) => void;
   cancelPendingMatch: () => void;
 }
@@ -73,6 +88,7 @@ export type { EmbeddedCard } from '@/contexts/CardEmbeddingContext';
 export function useEmbeddingScanner({
   onCardConfirmed,
   enabled = true,
+  enableOCR = false, // Disabled by default for speed
 }: UseEmbeddingScannerOptions): UseEmbeddingScannerReturn {
   const { cards: cardIndex, loaded: contextLoaded, loading: contextLoading, progress: indexProgress, error: embeddingError } = useCardEmbeddings();
   
@@ -84,6 +100,7 @@ export function useEmbeddingScanner({
   const scanIntervalRef = useRef<number | null>(null);
   const isScanningRef = useRef(false);
   const lastConfirmTriggerRef = useRef<{ cardId: string; timestamp: number } | null>(null);
+  const lastCardCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const [isStreaming, setIsStreaming] = useState(false);
   const [isVideoReady, setIsVideoReady] = useState(false);
@@ -123,74 +140,129 @@ export function useEmbeddingScanner({
     };
   }, []);
 
-  // Scan the current camera frame using card normalization and art embedding
-  const scanFrameInternal = useCallback(async (): Promise<{ 
-    bestMatch: EmbeddedCard | null; 
-    bestScore: number | null;
-    candidates: EmbeddingMatchResult[];
+  // Quick visual-only scan for auto-scan mode
+  const quickScanFrame = useCallback(async (): Promise<{
+    matches: MultiSignalMatch[];
+    embedding: number[];
+    cardCanvas: HTMLCanvasElement;
     message: string;
   } | null> => {
     if (!videoRef.current || cardIndex.length === 0) return null;
 
     try {
       const video = videoRef.current;
+      if (video.readyState < 2) return null;
 
-      if (video.readyState < 2) {
+      // Step 1: Normalize card
+      const normResult = await normalizeCardFromVideoFrame(video);
+      
+      if (!normResult.success) {
+        setQualityIssues([normResult.message]);
+        // Don't proceed with bad crops in auto-scan
+        return null;
+      }
+      
+      setQualityIssues([]);
+      lastCardCanvasRef.current = normResult.canvas;
+
+      // Step 2: Extract art region
+      const artCanvas = extractArtRegion(normResult.canvas);
+
+      // Step 3: Compute embedding
+      const frameEmbedding = extractEmbeddingFromArtCanvas(artCanvas);
+
+      if (!frameEmbedding || frameEmbedding.length === 0) {
         return null;
       }
 
-      // Step 1: Normalize card (detect edges, perspective correct)
+      // Step 4: Quick visual match
+      const matches = quickVisualMatch(frameEmbedding, cardIndex, 5);
+
+      // Log top 5 for debugging
+      console.log('[EmbeddingScanner] Top matches:', matches.slice(0, 5).map(m => ({
+        id: m.card.cardId,
+        name: m.card.name,
+        score: (m.combinedScore * 100).toFixed(1) + '%',
+        confidence: m.confidence,
+      })));
+
+      return { 
+        matches, 
+        embedding: frameEmbedding, 
+        cardCanvas: normResult.canvas,
+        message: normResult.message 
+      };
+    } catch (err) {
+      console.error('[EmbeddingScanner] Quick scan error:', err);
+      return null;
+    }
+  }, [cardIndex]);
+
+  // Full multi-signal scan for manual mode
+  const fullScanFrame = useCallback(async (): Promise<{
+    result: MultiSignalResult;
+    embedding: number[];
+    cardCanvas: HTMLCanvasElement;
+  } | null> => {
+    if (!videoRef.current || cardIndex.length === 0) return null;
+
+    try {
+      const video = videoRef.current;
+      if (video.readyState < 2) return null;
+
+      // Step 1: Normalize card
       const normResult = await normalizeCardFromVideoFrame(video);
       
-      // Update quality issues based on detection success
       if (!normResult.success) {
         setQualityIssues([normResult.message]);
       } else {
         setQualityIssues([]);
       }
+      
+      lastCardCanvasRef.current = normResult.canvas;
 
-      // Step 2: Extract art region from normalized card
+      // Step 2: Extract art region
       const artCanvas = extractArtRegion(normResult.canvas);
 
-      // Step 3: Compute embedding from art
+      // Step 3: Compute embedding
       const frameEmbedding = extractEmbeddingFromArtCanvas(artCanvas);
 
       if (!frameEmbedding || frameEmbedding.length === 0) {
-        console.warn('[EmbeddingScanner] Failed to get embedding');
         return null;
       }
 
-      // Step 4: Find top matches
-      const topMatches = findTopMatches(frameEmbedding, cardIndex, 5);
-      
-      const best = topMatches[0]?.item || null;
-      const bestSimilarity = topMatches[0]?.score || null;
+      // Step 4: Full multi-signal match (with OCR if enabled)
+      const result = await multiSignalMatch(
+        normResult.canvas,
+        frameEmbedding,
+        cardIndex,
+        enableOCR
+      );
 
-      // Transform results for UI
-      const candidates: EmbeddingMatchResult[] = topMatches.map(m => ({
-        card: m.item,
-        score: m.score,
-      }));
+      // Log results for debugging
+      console.log('[EmbeddingScanner] Multi-signal results:', {
+        ocrText: result.ocrText,
+        ocrConfidence: result.ocrConfidence,
+        topMatches: result.matches.slice(0, 3).map(m => ({
+          id: m.card.cardId,
+          name: m.card.name,
+          visual: (m.visualScore * 100).toFixed(1) + '%',
+          ocr: (m.ocrScore * 100).toFixed(1) + '%',
+          combined: (m.combinedScore * 100).toFixed(1) + '%',
+          confidence: m.confidence,
+        })),
+        needsConfirmation: result.needsConfirmation,
+        ambiguous: result.ambiguous,
+      });
 
-      setBestMatch(best);
-      setBestScore(bestSimilarity);
-      setMatchCandidates(candidates);
-
-      // Log top 5 matches for debugging
-      console.log('[EmbeddingScanner] Top matches:', topMatches.slice(0, 5).map(m => ({
-        id: m.item.cardId,
-        name: m.item.name,
-        score: (m.score * 100).toFixed(1) + '%',
-      })));
-
-      return { bestMatch: best, bestScore: bestSimilarity, candidates, message: normResult.message };
+      return { result, embedding: frameEmbedding, cardCanvas: normResult.canvas };
     } catch (err) {
-      console.error('[EmbeddingScanner] Scan frame error:', err);
+      console.error('[EmbeddingScanner] Full scan error:', err);
       return null;
     }
-  }, [cardIndex]);
+  }, [cardIndex, enableOCR]);
 
-  // Auto-scan frame with auto-confirm logic
+  // Auto-scan with quick visual matching
   const autoScanFrame = useCallback(async () => {
     if (isScanningRef.current) return;
 
@@ -198,29 +270,52 @@ export function useEmbeddingScanner({
     setIsScanning(true);
 
     try {
-      const result = await scanFrameInternal();
+      const result = await quickScanFrame();
 
-      if (result?.bestMatch && result.bestScore !== null && 
-          result.bestScore >= SIMILARITY_THRESHOLDS.AUTO_CONFIRM) {
-        const now = Date.now();
-        const lastTrigger = lastConfirmTriggerRef.current;
+      if (result && result.matches.length > 0) {
+        const topMatch = result.matches[0];
+        
+        setBestMatch(topMatch.card);
+        setBestScore(topMatch.combinedScore);
+        setMatchCandidates(result.matches.map(m => ({
+          card: m.card,
+          score: m.combinedScore,
+          visualScore: m.visualScore,
+          ocrScore: m.ocrScore,
+          confidence: m.confidence,
+        })));
 
-        // Check duplicate cooldown
-        if (!lastTrigger || lastTrigger.cardId !== result.bestMatch.cardId || now - lastTrigger.timestamp >= DUPLICATE_COOLDOWN_MS) {
-          console.log(`[EmbeddingScanner] Auto-triggering confirmation for: ${result.bestMatch.name} (${result.bestMatch.cardId}) at ${(result.bestScore * 100).toFixed(1)}%`);
-          lastConfirmTriggerRef.current = { cardId: result.bestMatch.cardId, timestamp: now };
-          setPendingMatch({ 
-            card: result.bestMatch, 
-            score: result.bestScore,
-            candidates: result.candidates,
-          });
+        // Only auto-trigger if high confidence AND has margin
+        if (topMatch.combinedScore >= SIMILARITY_THRESHOLDS.AUTO_CONFIRM && topMatch.hasMargin) {
+          const now = Date.now();
+          const lastTrigger = lastConfirmTriggerRef.current;
+
+          // Check duplicate cooldown
+          if (!lastTrigger || lastTrigger.cardId !== topMatch.card.cardId || now - lastTrigger.timestamp >= DUPLICATE_COOLDOWN_MS) {
+            console.log(`[EmbeddingScanner] Auto-triggering: ${topMatch.card.name} (${(topMatch.combinedScore * 100).toFixed(1)}%)`);
+            lastConfirmTriggerRef.current = { cardId: topMatch.card.cardId, timestamp: now };
+            
+            setPendingMatch({ 
+              card: topMatch.card, 
+              score: topMatch.combinedScore,
+              candidates: result.matches.map(m => ({
+                card: m.card,
+                score: m.combinedScore,
+                visualScore: m.visualScore,
+                confidence: m.confidence,
+              })),
+              visualEmbedding: result.embedding,
+              needsConfirmation: false,
+              ambiguous: false,
+            });
+          }
         }
       }
     } finally {
       isScanningRef.current = false;
       setIsScanning(false);
     }
-  }, [scanFrameInternal]);
+  }, [quickScanFrame]);
 
   // Start/stop auto-scan loop
   useEffect(() => {
@@ -295,9 +390,9 @@ export function useEmbeddingScanner({
     setAutoScanEnabled(prev => !prev);
   }, []);
 
-  // Manual scan - always scans and shows confirmation for best match
+  // Manual scan with full multi-signal matching
   const manualScan = useCallback(async () => {
-    console.log('[EmbeddingScanner] Manual scan triggered', { isStreaming, isVideoReady, isIndexReady });
+    console.log('[EmbeddingScanner] Manual scan triggered');
     
     if (!isStreaming || !isVideoReady || !isIndexReady) {
       console.log('[EmbeddingScanner] Manual scan aborted - conditions not met');
@@ -306,48 +401,89 @@ export function useEmbeddingScanner({
 
     setIsScanning(true);
     try {
-      const result = await scanFrameInternal();
-      console.log('[EmbeddingScanner] Manual scan result:', result);
+      const scanResult = await fullScanFrame();
 
-      // Always show confirmation modal for manual scan if we have a match
-      if (result?.bestMatch && result.bestScore !== null) {
+      if (scanResult && scanResult.result.matches.length > 0) {
+        const { result, embedding } = scanResult;
+        const topMatch = result.matches[0];
+
+        setBestMatch(topMatch.card);
+        setBestScore(topMatch.combinedScore);
+        setMatchCandidates(result.matches.map(m => ({
+          card: m.card,
+          score: m.combinedScore,
+          visualScore: m.visualScore,
+          ocrScore: m.ocrScore,
+          confidence: m.confidence,
+        })));
+
+        // Always show confirmation for manual scan
         setPendingMatch({ 
-          card: result.bestMatch, 
-          score: result.bestScore,
-          candidates: result.candidates,
+          card: topMatch.card, 
+          score: topMatch.combinedScore,
+          candidates: result.matches.map(m => ({
+            card: m.card,
+            score: m.combinedScore,
+            visualScore: m.visualScore,
+            ocrScore: m.ocrScore,
+            confidence: m.confidence,
+          })),
+          ocrText: result.ocrText,
+          ocrConfidence: result.ocrConfidence,
+          visualEmbedding: embedding,
+          needsConfirmation: result.needsConfirmation,
+          ambiguous: result.ambiguous,
         });
+
+        if (result.message) {
+          setQualityIssues([result.message]);
+        }
       }
     } finally {
       setIsScanning(false);
     }
-  }, [isStreaming, isVideoReady, isIndexReady, scanFrameInternal]);
+  }, [isStreaming, isVideoReady, isIndexReady, fullScanFrame]);
 
-  const confirmPendingMatch = useCallback(() => {
+  // Confirm pending match and store feedback
+  const confirmPendingMatch = useCallback((selectedCard?: EmbeddedCard) => {
     if (!pendingMatch) return;
 
-    const { card } = pendingMatch;
+    const cardToConfirm = selectedCard || pendingMatch.card;
+    const wasCorrect = cardToConfirm.cardId === pendingMatch.card.cardId;
+
+    // Store feedback sample for training
+    storeScanFeedback({
+      cardId: cardToConfirm.cardId,
+      visualEmbedding: pendingMatch.visualEmbedding,
+      ocrText: pendingMatch.ocrText,
+      ocrConfidence: pendingMatch.ocrConfidence,
+      visualScore: pendingMatch.candidates.find(c => c.card.cardId === cardToConfirm.cardId)?.visualScore,
+      combinedScore: pendingMatch.score,
+      wasCorrect,
+      userCorrectedTo: wasCorrect ? undefined : cardToConfirm.cardId,
+    });
 
     // Add to recent scans
     setRecentScans(prev => {
-      const next = [{ card, timestamp: Date.now() }, ...prev];
+      const next = [{ card: cardToConfirm, timestamp: Date.now() }, ...prev];
       return next.slice(0, 5);
     });
 
-    setLastDetectedId(card.cardId);
+    setLastDetectedId(cardToConfirm.cardId);
 
     // Convert to CardData format and confirm
     const cardData: CardData = {
-      cardId: card.cardId,
-      name: card.name,
-      setName: card.setName || 'Unknown',
-      rarity: card.rarity,
+      cardId: cardToConfirm.cardId,
+      name: cardToConfirm.name,
+      setName: cardToConfirm.setName || 'Unknown',
+      rarity: cardToConfirm.rarity,
     };
 
-    onCardConfirmed(cardData, card.cardId);
+    onCardConfirmed(cardData, cardToConfirm.cardId);
     setPendingMatch(null);
   }, [pendingMatch, onCardConfirmed]);
 
-  // Select a different candidate from the list
+  // Select a different candidate
   const selectCandidate = useCallback((card: EmbeddedCard, score: number) => {
     if (!pendingMatch) return;
     

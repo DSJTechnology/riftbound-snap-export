@@ -14,6 +14,48 @@ export type Database = {
   }
   public: {
     Tables: {
+      card_scan_samples: {
+        Row: {
+          card_id: string
+          combined_score: number | null
+          created_at: string
+          id: string
+          ocr_confidence: number | null
+          ocr_text: string | null
+          scan_timestamp: string
+          user_corrected_to: string | null
+          visual_embedding: Json | null
+          visual_score: number | null
+          was_correct: boolean | null
+        }
+        Insert: {
+          card_id: string
+          combined_score?: number | null
+          created_at?: string
+          id?: string
+          ocr_confidence?: number | null
+          ocr_text?: string | null
+          scan_timestamp?: string
+          user_corrected_to?: string | null
+          visual_embedding?: Json | null
+          visual_score?: number | null
+          was_correct?: boolean | null
+        }
+        Update: {
+          card_id?: string
+          combined_score?: number | null
+          created_at?: string
+          id?: string
+          ocr_confidence?: number | null
+          ocr_text?: string | null
+          scan_timestamp?: string
+          user_corrected_to?: string | null
+          visual_embedding?: Json | null
+          visual_score?: number | null
+          was_correct?: boolean | null
+        }
+        Relationships: []
+      }
       riftbound_cards: {
         Row: {
           art_url: string | null

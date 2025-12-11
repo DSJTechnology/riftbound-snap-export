@@ -11,10 +11,18 @@ import {
   EDGE_FEATURES,
   TEXTURE_FEATURES,
   FREQUENCY_FEATURES,
-  CARD_CROP,
+  ART_REGION,
   OUTPUT_SIZE,
   QUALITY_THRESHOLDS,
 } from './embeddingConfig';
+
+// Legacy alias for backward compatibility
+const CARD_CROP = {
+  LEFT_PERCENT: ART_REGION.LEFT,
+  RIGHT_PERCENT: ART_REGION.RIGHT,
+  TOP_PERCENT: ART_REGION.TOP,
+  BOTTOM_PERCENT: ART_REGION.BOTTOM,
+} as const;
 
 export interface QualityCheckResult {
   passed: boolean;
