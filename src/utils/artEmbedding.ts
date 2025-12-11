@@ -1,19 +1,23 @@
 /**
- * Art-focused embedding extraction.
+ * Art-focused embedding extraction - CANONICAL PIPELINE
  * This module provides consistent feature extraction for both client and edge function.
+ * All client-side embedding operations should use this module.
  */
 
-// Shared constants - MUST match edge function
-export const EMBEDDING_SIZE = 256;
-export const OUTPUT_SIZE = 224;
+import {
+  EMBEDDING_SIZE,
+  OUTPUT_SIZE,
+  COLOR_BINS,
+  INTENSITY_BINS,
+  GRID_SIZE,
+  EDGE_FEATURES,
+  TEXTURE_FEATURES,
+  FREQUENCY_FEATURES,
+  EMBEDDING_VALIDATION,
+} from './embeddingConfig';
 
-// Feature extraction configuration
-const COLOR_BINS = 8;
-const INTENSITY_BINS = 14;
-const GRID_SIZE = 4;
-const EDGE_FEATURES = 32;
-const TEXTURE_FEATURES = 32;
-const FREQUENCY_FEATURES = 48;
+// Re-export constants for convenience
+export { EMBEDDING_SIZE, OUTPUT_SIZE };
 
 /**
  * Extract a 256-dimensional feature vector from pixel data.
@@ -184,6 +188,13 @@ export function l2Normalize(vector: number[]): number[] {
 }
 
 /**
+ * Compute L2 norm of a vector
+ */
+export function computeNorm(vector: number[]): number {
+  return Math.sqrt(vector.reduce((a, b) => a + b * b, 0));
+}
+
+/**
  * Resize an image canvas to OUTPUT_SIZE x OUTPUT_SIZE
  */
 export function resizeToOutputSize(sourceCanvas: HTMLCanvasElement): HTMLCanvasElement {
@@ -218,9 +229,34 @@ export function extractEmbeddingFromArtCanvas(artCanvas: HTMLCanvasElement): num
 }
 
 /**
- * Compute cosine similarity between two L2-normalized vectors.
+ * Compute cosine similarity between two vectors.
+ * Handles non-normalized vectors by computing proper cosine.
  */
 export function cosineSimilarity(a: number[], b: number[]): number {
+  if (!a || !b || a.length === 0 || b.length === 0) return 0;
+  
+  const minLen = Math.min(a.length, b.length);
+  
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  
+  for (let i = 0; i < minLen; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  if (denom === 0) return 0;
+  
+  return dot / denom;
+}
+
+/**
+ * Compute dot product (fast path for pre-normalized vectors)
+ */
+export function dotProduct(a: number[], b: number[]): number {
   if (a.length !== b.length || a.length === 0) return 0;
   
   let dot = 0;
@@ -238,11 +274,50 @@ export function findTopMatches<T extends { embedding: number[] }>(
   candidates: T[],
   topN = 5
 ): Array<{ item: T; score: number }> {
-  const scored = candidates.map(item => ({
-    item,
-    score: cosineSimilarity(queryEmbedding, item.embedding),
-  }));
+  // Normalize query once
+  const normalizedQuery = l2Normalize(queryEmbedding);
+  
+  const scored = candidates.map(item => {
+    // Use dot product since both should be normalized
+    const score = dotProduct(normalizedQuery, item.embedding);
+    return { item, score };
+  });
 
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, topN);
+}
+
+/**
+ * Validate and normalize an embedding
+ */
+export function validateAndNormalizeEmbedding(embedding: number[]): { 
+  embedding: number[]; 
+  valid: boolean; 
+  norm: number;
+  issues: string[] 
+} {
+  const issues: string[] = [];
+  
+  if (!Array.isArray(embedding) || embedding.length === 0) {
+    return { embedding: [], valid: false, norm: 0, issues: ['Invalid embedding array'] };
+  }
+  
+  if (embedding.length !== EMBEDDING_SIZE) {
+    issues.push(`Length ${embedding.length} != ${EMBEDDING_SIZE}`);
+  }
+  
+  const norm = computeNorm(embedding);
+  
+  if (norm < EMBEDDING_VALIDATION.MIN_NORM || norm > EMBEDDING_VALIDATION.MAX_NORM) {
+    // Re-normalize if out of range
+    const normalized = l2Normalize(embedding);
+    return { 
+      embedding: normalized, 
+      valid: issues.length === 0, 
+      norm: 1.0,
+      issues: issues.length > 0 ? issues : [`Re-normalized from ${norm.toFixed(4)}`]
+    };
+  }
+  
+  return { embedding, valid: issues.length === 0, norm, issues };
 }

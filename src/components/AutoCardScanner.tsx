@@ -509,7 +509,7 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
                 Cancel
               </Button>
               <Button
-                onClick={confirmPendingMatch}
+                onClick={() => confirmPendingMatch()}
                 className="gap-2"
               >
                 <Check className="w-4 h-4" />
