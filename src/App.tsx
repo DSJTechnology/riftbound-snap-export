@@ -8,6 +8,7 @@ import { CardHashProvider } from "@/contexts/CardHashContext";
 import { CardEmbeddingProvider } from "@/contexts/CardEmbeddingContext";
 import Index from "./pages/Index";
 import Training from "./pages/Training";
+import SanityTests from "./pages/SanityTests";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -24,6 +25,7 @@ const App = () => (
               <Routes>
                 <Route path="/" element={<Index />} />
                 <Route path="/training" element={<Training />} />
+                <Route path="/sanity-tests" element={<SanityTests />} />
                 {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
                 <Route path="*" element={<NotFound />} />
               </Routes>
