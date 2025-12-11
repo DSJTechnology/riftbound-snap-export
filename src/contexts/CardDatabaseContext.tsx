@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import * as React from 'react';
+import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import Fuse from 'fuse.js';
 import { CardData, cardDatabase as fallbackCards } from '@/data/cardDatabase';
 
@@ -15,8 +16,7 @@ const CardDatabaseContext = createContext<CardDatabaseState | undefined>(undefin
 const STORAGE_KEY = 'riftbound-card-database';
 const STORAGE_TIMESTAMP_KEY = 'riftbound-card-database-timestamp';
 
-
-export function CardDatabaseProvider({ children }: { children: ReactNode }) {
+export function CardDatabaseProvider({ children }: { children: React.ReactNode }) {
   const [cards, setCards] = useState<CardData[]>([]);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [isLoading, setIsLoading] = useState(false);

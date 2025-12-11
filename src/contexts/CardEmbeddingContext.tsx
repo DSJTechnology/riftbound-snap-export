@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
+import * as React from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { validateEmbedding, EMBEDDING_SIZE } from '@/utils/embeddingConfig';
 import { l2Normalize, computeNorm } from '@/utils/artEmbedding';
