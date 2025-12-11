@@ -1,11 +1,17 @@
 /**
  * Image preprocessing utilities for card embedding.
  * Provides consistent cropping and resizing for both scanner and training.
+ * 
+ * IMPORTANT: This module uses FULL CARD cropping (not art-only) for embeddings
+ * to capture name bar, frame, and text that differentiate cards.
  */
 
 import { MODEL_INPUT_SIZE } from './cnnEmbedding';
 
-// Art region percentages on card (same as embeddingConfig.ts)
+// Card aspect ratio (width / height) - standard card dimensions
+export const CARD_ASPECT_RATIO = 500 / 700; // ~0.714
+
+// Legacy art region percentages (kept for reference, NOT used in embeddings)
 export const ART_REGION = {
   LEFT: 0.06,
   RIGHT: 0.94,
@@ -14,7 +20,7 @@ export const ART_REGION = {
 } as const;
 
 export interface DrawOptions {
-  useArtRegion?: boolean;
+  useArtRegion?: boolean; // Deprecated: should always be false for embeddings
   targetSize?: number;
 }
 
@@ -34,14 +40,22 @@ export async function loadImage(url: string): Promise<HTMLImageElement> {
 }
 
 /**
- * Draw a card image to a canvas, optionally cropping to art region.
- * Returns a canvas sized to MODEL_INPUT_SIZE x MODEL_INPUT_SIZE.
+ * Draw a card image to a canvas, resizing to MODEL_INPUT_SIZE x MODEL_INPUT_SIZE.
+ * 
+ * FULL CARD mode (default, useArtRegion=false):
+ * - Crops to maintain card aspect ratio (centered)
+ * - Resizes to targetSize x targetSize
+ * - Captures full card including name, frame, art, text
+ * 
+ * Art region mode (useArtRegion=true, deprecated):
+ * - Crops to just the art window
+ * - Not recommended for embeddings
  */
 export function drawCardToCanvas(
   source: HTMLImageElement | HTMLCanvasElement | HTMLVideoElement,
   options: DrawOptions = {}
 ): HTMLCanvasElement {
-  const { useArtRegion = true, targetSize = MODEL_INPUT_SIZE } = options;
+  const { useArtRegion = false, targetSize = MODEL_INPUT_SIZE } = options;
   
   const canvas = document.createElement('canvas');
   canvas.width = targetSize;
@@ -64,7 +78,7 @@ export function drawCardToCanvas(
   }
   
   if (useArtRegion) {
-    // Crop to art region
+    // Legacy: Crop to art region only (deprecated for embeddings)
     const sx = Math.floor(sourceWidth * ART_REGION.LEFT);
     const sy = Math.floor(sourceHeight * ART_REGION.TOP);
     const sw = Math.floor(sourceWidth * (ART_REGION.RIGHT - ART_REGION.LEFT));
@@ -72,8 +86,26 @@ export function drawCardToCanvas(
     
     ctx.drawImage(source, sx, sy, sw, sh, 0, 0, targetSize, targetSize);
   } else {
-    // Use full image
-    ctx.drawImage(source, 0, 0, targetSize, targetSize);
+    // FULL CARD: Crop to card aspect ratio, centered
+    const sourceAspect = sourceWidth / sourceHeight;
+    
+    let sx: number, sy: number, sw: number, sh: number;
+    
+    if (sourceAspect > CARD_ASPECT_RATIO) {
+      // Source is wider than card - crop left/right
+      sh = sourceHeight;
+      sw = sh * CARD_ASPECT_RATIO;
+      sx = (sourceWidth - sw) / 2;
+      sy = 0;
+    } else {
+      // Source is taller than card - crop top/bottom
+      sw = sourceWidth;
+      sh = sw / CARD_ASPECT_RATIO;
+      sx = 0;
+      sy = (sourceHeight - sh) / 2;
+    }
+    
+    ctx.drawImage(source, sx, sy, sw, sh, 0, 0, targetSize, targetSize);
   }
   
   return canvas;

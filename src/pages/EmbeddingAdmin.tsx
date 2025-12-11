@@ -105,8 +105,8 @@ const EmbeddingAdmin = () => {
       // Load the image
       const image = await loadImage(card.art_url);
       
-      // Preprocess (crop to art region, resize)
-      const canvas = drawCardToCanvas(image, { useArtRegion: true });
+      // Preprocess (full card crop, resize to 224x224)
+      const canvas = drawCardToCanvas(image, { useArtRegion: false });
       
       // Compute embedding
       const embedding = await computeEmbeddingFromCanvas(canvas);
@@ -401,11 +401,11 @@ const EmbeddingAdmin = () => {
           </CardHeader>
           <CardContent className="text-sm text-muted-foreground space-y-2">
             <p>1. Each card's DotGG art URL is loaded as an image.</p>
-            <p>2. The art region is cropped and resized to 224×224.</p>
+            <p>2. The <strong>full card</strong> is cropped (maintaining aspect ratio) and resized to 224×224.</p>
             <p>3. MobileNet v2 extracts a feature vector (truncated to 256 dimensions).</p>
             <p>4. The embedding is L2-normalized and saved to the database.</p>
             <p className="text-xs pt-2 border-t border-border">
-              Note: This replaces the previous handcrafted feature embeddings with CNN-based ones.
+              Note: Full card embeddings capture name, frame, art, and text for better differentiation.
             </p>
           </CardContent>
         </Card>
