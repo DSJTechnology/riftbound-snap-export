@@ -2,3 +2,15 @@ project_id = "otyiezyaqexbgibxgqtl"
 
 [functions.sync-riftbound-cards]
 verify_jwt = false
+
+[functions.training-label]
+verify_jwt = false
+
+[functions.training-search-images]
+verify_jwt = false
+
+[functions.training-web-confirm]
+verify_jwt = false
+
+[functions.training-images]
+verify_jwt = false

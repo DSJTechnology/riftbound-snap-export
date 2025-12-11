@@ -1,5 +1,5 @@
-import { useMemo } from 'react';
-import { Camera, X, Loader2, ScanLine, AlertCircle, Search, Zap, ZapOff, Check, AlertTriangle } from 'lucide-react';
+import { useState, useMemo, useRef, useCallback } from 'react';
+import { Camera, X, Loader2, ScanLine, AlertCircle, Search, Zap, ZapOff, Check, AlertTriangle, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { CardData } from '@/data/cardDatabase';
 import { useCardDatabase } from '@/contexts/CardDatabaseContext';
@@ -8,6 +8,8 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { Progress } from '@/components/ui/progress';
 import { SIMILARITY_THRESHOLDS } from '@/utils/embeddingConfig';
+import { CorrectionDialog } from './CorrectionDialog';
+import { saveTrainingLabel, captureVideoFrame } from '@/services/trainingService';
 
 interface AutoCardScannerProps {
   onCardDetected: (card: CardData) => void;
@@ -16,8 +18,18 @@ interface AutoCardScannerProps {
 
 export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScannerProps) {
   const { cards } = useCardDatabase();
+  const [showCorrectionDialog, setShowCorrectionDialog] = useState(false);
+  const [isSavingTraining, setIsSavingTraining] = useState(false);
+  const lastFrameRef = useRef<string | null>(null);
 
-  const handleCardConfirmed = (card: CardData, cardId: string) => {
+  // Capture current frame before any confirmation
+  const captureCurrentFrame = useCallback((videoEl: HTMLVideoElement | null) => {
+    if (videoEl) {
+      lastFrameRef.current = captureVideoFrame(videoEl);
+    }
+  }, []);
+
+  const handleCardConfirmed = useCallback(async (card: CardData, cardId: string, source: 'scan_confirm' | 'scan_correction' = 'scan_confirm') => {
     onCardDetected(card);
     
     toast.success(
@@ -36,7 +48,17 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
     if ('vibrate' in navigator) {
       navigator.vibrate(100);
     }
-  };
+
+    // Save training image in background
+    if (lastFrameRef.current) {
+      const frameData = lastFrameRef.current;
+      saveTrainingLabel(cardId, source, frameData).then(result => {
+        if (result.success) {
+          console.log(`[AutoCardScanner] Saved training image for ${cardId} (${source})`);
+        }
+      });
+    }
+  }, [onCardDetected]);
 
   const {
     videoRef,
@@ -502,24 +524,55 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
               </div>
             )}
 
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-col gap-2">
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="outline"
+                  onClick={cancelPendingMatch}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={() => {
+                    captureCurrentFrame(videoRef.current);
+                    confirmPendingMatch();
+                  }}
+                  className="gap-2"
+                >
+                  <Check className="w-4 h-4" />
+                  Confirm
+                </Button>
+              </div>
+              
+              {/* This is wrong button */}
               <Button
-                variant="outline"
-                onClick={cancelPendingMatch}
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  captureCurrentFrame(videoRef.current);
+                  setShowCorrectionDialog(true);
+                }}
+                className="text-muted-foreground hover:text-destructive gap-2"
               >
-                Cancel
-              </Button>
-              <Button
-                onClick={() => confirmPendingMatch()}
-                className="gap-2"
-              >
-                <Check className="w-4 h-4" />
-                Confirm
+                <XCircle className="w-4 h-4" />
+                This is wrong
               </Button>
             </div>
           </div>
         </div>
       )}
+
+      {/* Correction Dialog */}
+      <CorrectionDialog
+        isOpen={showCorrectionDialog}
+        onClose={() => setShowCorrectionDialog(false)}
+        currentGuess={pendingMatch?.card.name}
+        onCorrect={(card) => {
+          handleCardConfirmed(card, card.cardId, 'scan_correction');
+          setShowCorrectionDialog(false);
+          cancelPendingMatch();
+        }}
+      />
 
       {/* Recently Scanned Cards */}
       {recentScans.length > 0 && (

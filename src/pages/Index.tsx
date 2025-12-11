@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef } from 'react';
-import { ScanLine, ListChecks, Download, Trash2, AlertTriangle, Settings } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ScanLine, ListChecks, Download, Trash2, AlertTriangle, Settings, Database } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { AutoCardScanner } from '@/components/AutoCardScanner';
 import { CardSearch } from '@/components/CardSearch';
@@ -251,6 +252,19 @@ const Index = () => {
                 Update the card database to get the latest Riftbound cards from DotGG.
                 The database is saved locally for offline use.
               </p>
+            </section>
+
+            <section>
+              <h2 className="text-base font-semibold text-foreground mb-2">Training Data</h2>
+              <p className="text-sm text-muted-foreground mb-3">
+                Collect labeled images to improve card recognition accuracy.
+              </p>
+              <Link to="/training">
+                <Button variant="outline" className="gap-2">
+                  <Database className="w-4 h-4" />
+                  Manage Training Data
+                </Button>
+              </Link>
             </section>
           </div>
         )}
