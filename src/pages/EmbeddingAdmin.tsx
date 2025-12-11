@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Loader2, RefreshCw, CheckCircle2, XCircle, Play, Pause } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -130,6 +130,10 @@ const EmbeddingAdmin = () => {
     }
   };
   
+  // Use refs for processing control (to avoid stale closure issues)
+  const processingRef = useRef(false);
+  const pausedRef = useRef(false);
+
   // Rebuild embeddings
   const rebuildEmbeddings = async (onlyMissing: boolean) => {
     if (!modelLoaded) {
@@ -141,13 +145,17 @@ const EmbeddingAdmin = () => {
       ? cards.filter(c => !c.has_embedding && c.art_url)
       : cards.filter(c => c.art_url);
     
+    console.log('[EmbeddingAdmin] Cards to process:', cardsToProcess.length);
+    
     if (cardsToProcess.length === 0) {
       toast.info('No cards to process');
       return;
     }
     
     setIsProcessing(true);
+    processingRef.current = true;
     setIsPaused(false);
+    pausedRef.current = false;
     setProcessedCount(0);
     setFailedCount(0);
     setErrors([]);
@@ -156,12 +164,12 @@ const EmbeddingAdmin = () => {
     let failed = 0;
     
     for (const card of cardsToProcess) {
-      // Check if paused
-      while (isPaused && isProcessing) {
+      // Check if paused using ref
+      while (pausedRef.current && processingRef.current) {
         await new Promise(r => setTimeout(r, 100));
       }
       
-      if (!isProcessing) break;
+      if (!processingRef.current) break;
       
       setCurrentCard(card.card_id);
       
@@ -180,6 +188,7 @@ const EmbeddingAdmin = () => {
     }
     
     setIsProcessing(false);
+    processingRef.current = false;
     setCurrentCard(null);
     
     // Refresh card list
@@ -189,12 +198,15 @@ const EmbeddingAdmin = () => {
   };
   
   const stopProcessing = () => {
+    processingRef.current = false;
     setIsProcessing(false);
     setIsPaused(false);
+    pausedRef.current = false;
   };
   
   const togglePause = () => {
-    setIsPaused(prev => !prev);
+    pausedRef.current = !pausedRef.current;
+    setIsPaused(pausedRef.current);
   };
   
   const progressPercent = totalCards > 0
