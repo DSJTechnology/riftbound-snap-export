@@ -2,25 +2,12 @@ import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.2";
 
-// Import shared decoder and preprocessing
-import {
-  fetchAndDecodeImage,
-  cropToArtRegion,
-  resizeImage,
-  extractFeaturesFromPixels,
-  l2Normalize,
-  OUTPUT_SIZE,
-} from "../_shared/imageDecoder.ts";
-
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const BATCH_SIZE = 1; // Process 1 card at a time to avoid memory limits
-
-// Diagnostic cards to log
-const DIAGNOSTIC_CARDS = ['OGN-001', 'OGN-050', 'OGN-100', 'OGN-150', 'SFD-001'];
+const BATCH_SIZE = 25; // Increased since we're not computing embeddings anymore
 
 interface DotGGCard {
   id: string;
@@ -28,31 +15,6 @@ interface DotGGCard {
   set_name: string;
   rarity: string | null;
   image: string;
-}
-
-/**
- * Compute embedding for a card image URL with art region focus
- */
-async function computeCardEmbedding(imageUrl: string, cardId: string): Promise<number[] | null> {
-  const decoded = await fetchAndDecodeImage(imageUrl);
-  if (!decoded) {
-    console.warn(`[sync] Failed to decode image for ${cardId}`);
-    return null;
-  }
-  
-  console.log(`[sync] Decoded ${cardId}: ${decoded.width}x${decoded.height}`);
-  
-  // Crop to art region
-  const art = cropToArtRegion(decoded.pixels, decoded.width, decoded.height);
-  
-  // Resize to standard size
-  const resized = resizeImage(art.pixels, art.width, art.height);
-  
-  // Extract features
-  const features = extractFeaturesFromPixels(resized, OUTPUT_SIZE, OUTPUT_SIZE);
-  
-  // L2 normalize
-  return l2Normalize(features);
 }
 
 serve(async (req) => {
@@ -118,34 +80,18 @@ serve(async (req) => {
       try {
         const imageUrl = card.image || `https://static.dotgg.gg/riftbound/cards/${card.id}.webp`;
         
-        // Compute art-focused embedding using REAL pixel decoder (handles WebP via proxy)
-        const embedding = await computeCardEmbedding(imageUrl, card.id);
-        
-        if (!embedding) {
-          console.warn(`[sync] Failed to compute embedding for ${card.id}`);
-          failed++;
-          continue;
-        }
-        
-        // Use existing storage URL or construct one (skip re-upload to save memory)
+        // Get public URL for the card art (assuming it's already in storage or will be)
         const { data: publicUrlData } = supabase.storage.from('riftbound-cards').getPublicUrl(`${card.id}.webp`);
         
-        // Log diagnostic cards
-        if (DIAGNOSTIC_CARDS.includes(card.id)) {
-          const norm = Math.sqrt(embedding.reduce((a, b) => a + b * b, 0));
-          console.log(`[sync] DIAGNOSTIC ${card.id} (${card.name}):`);
-          console.log(`  First 5 values: [${embedding.slice(0, 5).map(v => v.toFixed(6)).join(', ')}]`);
-          console.log(`  L2 norm: ${norm.toFixed(6)}`);
-        }
-        
-        // Upsert to database (embedding only, keep existing art_url if present)
+        // Upsert to database - NO embedding computation
+        // Embeddings will be computed client-side via the Embedding Admin page
         const { error } = await supabase.from('riftbound_cards').upsert({
           card_id: card.id,
           name: card.name,
           set_name: card.set_name,
           rarity: card.rarity,
-          art_url: publicUrlData.publicUrl,
-          embedding: embedding,
+          art_url: imageUrl, // Use the original DotGG URL directly
+          // embedding: null - Don't set this, leave existing embeddings intact
           updated_at: new Date().toISOString(),
         }, {
           onConflict: 'card_id',

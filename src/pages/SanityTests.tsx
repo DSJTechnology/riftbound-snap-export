@@ -8,23 +8,62 @@ import { Badge } from '@/components/ui/badge';
 import { useCardDatabase } from '@/contexts/CardDatabaseContext';
 import { CardData } from '@/data/cardDatabase';
 import { cn } from '@/lib/utils';
+import { supabase } from '@/integrations/supabase/client';
 import {
-  preprocessImage,
-  encodeImage,
-  compareImages,
-  getCardTrainingImages,
-  getCardArtImages,
-  evaluatePreprocessTest,
-  evaluateSameImageTest,
-  evaluateSameCardTest,
-  evaluateDifferentCardTest,
-  PreprocessResult,
-  CompareResult,
-  TrainingImageInfo,
-  TestResult,
-  TestStatus,
-  ImageSource,
-} from '@/services/debugService';
+  loadEmbeddingModel,
+  isModelLoaded,
+  computeEmbeddingFromCanvas,
+  cosineSimilarity,
+  computeNorm,
+  EMBEDDING_SIZE,
+} from '@/embedding/cnnEmbedding';
+import {
+  loadImage,
+  drawCardToCanvas,
+  getCanvasStats,
+  canvasToDataUrl,
+} from '@/embedding/preprocess';
+
+// Types
+type TestStatus = 'pass' | 'warn' | 'fail' | 'pending' | 'error';
+type ImageSourceType = 'training' | 'card_art';
+
+interface TestResult {
+  status: TestStatus;
+  message: string;
+}
+
+interface TrainingImageInfo {
+  id: string;
+  image_url: string;
+  source: string;
+}
+
+interface PreprocessData {
+  originalUrl: string;
+  preprocessedDataUrl: string;
+  width: number;
+  height: number;
+  meanBrightness: number;
+  stdBrightness: number;
+  minPixel: number;
+  maxPixel: number;
+}
+
+interface CompareData {
+  similarity: number;
+  norm1: number;
+  norm2: number;
+  embedding1First5: number[];
+  embedding2First5: number[];
+}
+
+// Thresholds
+const THRESHOLDS = {
+  SAME_IMAGE: { PASS: 0.99, WARN: 0.97 },
+  SAME_CARD: { PASS: 0.85, WARN: 0.70 },
+  DIFFERENT_CARD: { PASS: 0.60, WARN: 0.75 },
+};
 
 const StatusBadge = ({ status }: { status: TestStatus }) => {
   const config = {
@@ -48,6 +87,10 @@ const StatusBadge = ({ status }: { status: TestStatus }) => {
 const SanityTests = () => {
   const { cards } = useCardDatabase();
   
+  // Model state
+  const [modelLoaded, setModelLoaded] = useState(isModelLoaded());
+  const [loadingModel, setLoadingModel] = useState(false);
+  
   // Card selection state
   const [searchQueryA, setSearchQueryA] = useState('');
   const [searchQueryB, setSearchQueryB] = useState('');
@@ -57,7 +100,6 @@ const SanityTests = () => {
   const [showSuggestionsB, setShowSuggestionsB] = useState(false);
   
   // Image source type
-  type ImageSourceType = 'training' | 'card_art';
   const [imageSourceA, setImageSourceA] = useState<ImageSourceType>('card_art');
   const [imageSourceB, setImageSourceB] = useState<ImageSourceType>('card_art');
   
@@ -69,19 +111,15 @@ const SanityTests = () => {
   const [loadingImagesA, setLoadingImagesA] = useState(false);
   const [loadingImagesB, setLoadingImagesB] = useState(false);
   
-  // Card art URLs (for card_art source)
-  const [cardArtUrlA, setCardArtUrlA] = useState<string | null>(null);
-  const [cardArtUrlB, setCardArtUrlB] = useState<string | null>(null);
-  
   // Test results
   const [preprocessResult, setPreprocessResult] = useState<TestResult | null>(null);
-  const [preprocessData, setPreprocessData] = useState<PreprocessResult | null>(null);
+  const [preprocessData, setPreprocessData] = useState<PreprocessData | null>(null);
   const [sameImageResult, setSameImageResult] = useState<TestResult | null>(null);
-  const [sameImageData, setSameImageData] = useState<CompareResult | null>(null);
+  const [sameImageData, setSameImageData] = useState<CompareData | null>(null);
   const [sameCardResult, setSameCardResult] = useState<TestResult | null>(null);
-  const [sameCardData, setSameCardData] = useState<CompareResult | null>(null);
+  const [sameCardData, setSameCardData] = useState<CompareData | null>(null);
   const [diffCardResult, setDiffCardResult] = useState<TestResult | null>(null);
-  const [diffCardData, setDiffCardData] = useState<CompareResult | null>(null);
+  const [diffCardData, setDiffCardData] = useState<CompareData | null>(null);
   
   // Loading states
   const [runningPreprocess, setRunningPreprocess] = useState(false);
@@ -89,6 +127,26 @@ const SanityTests = () => {
   const [runningSameCard, setRunningSameCard] = useState(false);
   const [runningDiffCard, setRunningDiffCard] = useState(false);
   const [runningAll, setRunningAll] = useState(false);
+  
+  // Load model on mount
+  useEffect(() => {
+    const load = async () => {
+      if (!isModelLoaded()) {
+        setLoadingModel(true);
+        try {
+          await loadEmbeddingModel();
+          setModelLoaded(true);
+        } catch (err) {
+          console.error('Failed to load model:', err);
+        } finally {
+          setLoadingModel(false);
+        }
+      } else {
+        setModelLoaded(true);
+      }
+    };
+    load();
+  }, []);
   
   // Suggestions
   const suggestionsA = searchQueryA.length >= 2
@@ -110,29 +168,38 @@ const SanityTests = () => {
     if (selectedCardA) {
       setLoadingImagesA(true);
       if (imageSourceA === 'training') {
-        getCardTrainingImages(selectedCardA.cardId, 10).then(({ data }) => {
-          setImagesA(data?.images || []);
-          setLoadingImagesA(false);
-          if (data?.images?.length) {
-            setSelectedImageA(data.images[0]);
-          } else {
-            setSelectedImageA(null);
-          }
-        });
+        // Fetch training images from database
+        supabase
+          .from('training_images')
+          .select('id, image_url, source')
+          .eq('card_id', selectedCardA.cardId)
+          .limit(10)
+          .then(({ data }) => {
+            setImagesA(data || []);
+            setLoadingImagesA(false);
+            if (data?.length) {
+              setSelectedImageA(data[0]);
+            } else {
+              setSelectedImageA(null);
+            }
+          });
       } else {
-        // card_art source
-        getCardArtImages(selectedCardA.cardId).then(({ data }) => {
-          const artUrl = data?.art_url || `https://otyiezyaqexbgibxgqtl.supabase.co/storage/v1/object/public/riftbound-cards/${selectedCardA.cardId}.webp`;
-          setCardArtUrlA(artUrl);
-          setImagesA([]);
-          setSelectedImageA({ id: 'card_art', image_url: artUrl, source: 'card_art' });
-          setLoadingImagesA(false);
-        });
+        // Card art source - fetch from riftbound_cards
+        supabase
+          .from('riftbound_cards')
+          .select('art_url')
+          .eq('card_id', selectedCardA.cardId)
+          .single()
+          .then(({ data }) => {
+            const artUrl = data?.art_url || `https://static.dotgg.gg/riftbound/cards/${selectedCardA.cardId}.webp`;
+            setImagesA([]);
+            setSelectedImageA({ id: 'card_art', image_url: artUrl, source: 'card_art' });
+            setLoadingImagesA(false);
+          });
       }
     } else {
       setImagesA([]);
       setSelectedImageA(null);
-      setCardArtUrlA(null);
     }
   }, [selectedCardA, imageSourceA]);
   
@@ -140,29 +207,36 @@ const SanityTests = () => {
     if (selectedCardB) {
       setLoadingImagesB(true);
       if (imageSourceB === 'training') {
-        getCardTrainingImages(selectedCardB.cardId, 10).then(({ data }) => {
-          setImagesB(data?.images || []);
-          setLoadingImagesB(false);
-          if (data?.images?.length) {
-            setSelectedImageB(data.images[0]);
-          } else {
-            setSelectedImageB(null);
-          }
-        });
+        supabase
+          .from('training_images')
+          .select('id, image_url, source')
+          .eq('card_id', selectedCardB.cardId)
+          .limit(10)
+          .then(({ data }) => {
+            setImagesB(data || []);
+            setLoadingImagesB(false);
+            if (data?.length) {
+              setSelectedImageB(data[0]);
+            } else {
+              setSelectedImageB(null);
+            }
+          });
       } else {
-        // card_art source
-        getCardArtImages(selectedCardB.cardId).then(({ data }) => {
-          const artUrl = data?.art_url || `https://otyiezyaqexbgibxgqtl.supabase.co/storage/v1/object/public/riftbound-cards/${selectedCardB.cardId}.webp`;
-          setCardArtUrlB(artUrl);
-          setImagesB([]);
-          setSelectedImageB({ id: 'card_art', image_url: artUrl, source: 'card_art' });
-          setLoadingImagesB(false);
-        });
+        supabase
+          .from('riftbound_cards')
+          .select('art_url')
+          .eq('card_id', selectedCardB.cardId)
+          .single()
+          .then(({ data }) => {
+            const artUrl = data?.art_url || `https://static.dotgg.gg/riftbound/cards/${selectedCardB.cardId}.webp`;
+            setImagesB([]);
+            setSelectedImageB({ id: 'card_art', image_url: artUrl, source: 'card_art' });
+            setLoadingImagesB(false);
+          });
       }
     } else {
       setImagesB([]);
       setSelectedImageB(null);
-      setCardArtUrlB(null);
     }
   }, [selectedCardB, imageSourceB]);
   
@@ -170,7 +244,6 @@ const SanityTests = () => {
     setSelectedCardA(card);
     setSearchQueryA(card.name);
     setShowSuggestionsA(false);
-    // Reset results
     setPreprocessResult(null);
     setSameImageResult(null);
     setSameCardResult(null);
@@ -183,103 +256,184 @@ const SanityTests = () => {
     setDiffCardResult(null);
   };
   
-  // Helper to build ImageSource param
-  const buildImageSource = (source: ImageSourceType, image: TrainingImageInfo | null, card: CardData | null): ImageSource => {
-    if (source === 'card_art' && card) {
-      return { source: 'card_art', card_id: card.cardId };
-    }
-    return { training_image_id: image?.id };
+  // Helper to get image URL
+  const getImageUrl = (source: ImageSourceType, image: TrainingImageInfo | null): string | null => {
+    return image?.image_url || null;
+  };
+  
+  // Compute embedding from URL
+  const computeEmbeddingFromUrl = async (url: string): Promise<number[]> => {
+    const img = await loadImage(url);
+    const canvas = drawCardToCanvas(img, { useArtRegion: true });
+    return computeEmbeddingFromCanvas(canvas);
   };
   
   // Test runners
   const runPreprocessTest = async () => {
-    if (!selectedImageA && imageSourceA === 'training') return;
-    if (!selectedCardA && imageSourceA === 'card_art') return;
+    const url = getImageUrl(imageSourceA, selectedImageA);
+    if (!url || !modelLoaded) return;
+    
     setRunningPreprocess(true);
     setPreprocessResult({ status: 'pending', message: 'Running...' });
     
-    const imageSource = buildImageSource(imageSourceA, selectedImageA, selectedCardA);
-    const { data, error } = await preprocessImage(imageSource);
-    
-    if (error) {
-      setPreprocessResult({ status: 'error', message: error });
-    } else if (data) {
-      setPreprocessData(data);
-      setPreprocessResult(evaluatePreprocessTest(data));
+    try {
+      const img = await loadImage(url);
+      const canvas = drawCardToCanvas(img, { useArtRegion: true });
+      const stats = getCanvasStats(canvas);
+      const dataUrl = canvasToDataUrl(canvas);
+      
+      setPreprocessData({
+        originalUrl: url,
+        preprocessedDataUrl: dataUrl,
+        width: stats.width,
+        height: stats.height,
+        meanBrightness: stats.meanBrightness,
+        stdBrightness: stats.stdBrightness,
+        minPixel: stats.minPixel,
+        maxPixel: stats.maxPixel,
+      });
+      
+      // Evaluate
+      const issues: string[] = [];
+      if (stats.meanBrightness < 0.1 || stats.meanBrightness > 0.9) {
+        issues.push(`Abnormal brightness (${(stats.meanBrightness * 100).toFixed(0)}%)`);
+      }
+      if (stats.stdBrightness < 0.05) {
+        issues.push(`Low contrast (std: ${stats.stdBrightness.toFixed(3)})`);
+      }
+      
+      if (issues.length === 0) {
+        setPreprocessResult({ status: 'pass', message: `Preprocessing OK: ${stats.width}×${stats.height}` });
+      } else if (issues.length === 1) {
+        setPreprocessResult({ status: 'warn', message: issues[0] });
+      } else {
+        setPreprocessResult({ status: 'fail', message: issues.join(', ') });
+      }
+    } catch (err) {
+      setPreprocessResult({ status: 'error', message: err instanceof Error ? err.message : 'Unknown error' });
     }
     
     setRunningPreprocess(false);
   };
   
   const runSameImageTest = async () => {
-    if (!selectedImageA && imageSourceA === 'training') return;
-    if (!selectedCardA && imageSourceA === 'card_art') return;
+    const url = getImageUrl(imageSourceA, selectedImageA);
+    if (!url || !modelLoaded) return;
+    
     setRunningSameImage(true);
     setSameImageResult({ status: 'pending', message: 'Running...' });
     
-    const imageSource = buildImageSource(imageSourceA, selectedImageA, selectedCardA);
-    const { data, error } = await compareImages(imageSource, imageSource);
-    
-    if (error) {
-      setSameImageResult({ status: 'error', message: error });
-    } else if (data) {
-      setSameImageData(data);
-      setSameImageResult(evaluateSameImageTest(data.cosine_similarity));
+    try {
+      // Compute embedding twice (should be identical)
+      const emb1 = await computeEmbeddingFromUrl(url);
+      const emb2 = await computeEmbeddingFromUrl(url);
+      
+      const similarity = cosineSimilarity(emb1, emb2);
+      const norm1 = computeNorm(emb1);
+      const norm2 = computeNorm(emb2);
+      
+      setSameImageData({
+        similarity,
+        norm1,
+        norm2,
+        embedding1First5: emb1.slice(0, 5),
+        embedding2First5: emb2.slice(0, 5),
+      });
+      
+      if (similarity >= THRESHOLDS.SAME_IMAGE.PASS) {
+        setSameImageResult({ status: 'pass', message: `Encoder consistent (${(similarity * 100).toFixed(2)}%)` });
+      } else if (similarity >= THRESHOLDS.SAME_IMAGE.WARN) {
+        setSameImageResult({ status: 'warn', message: `Minor variation (${(similarity * 100).toFixed(2)}%)` });
+      } else {
+        setSameImageResult({ status: 'fail', message: `Encoder inconsistent (${(similarity * 100).toFixed(2)}%)` });
+      }
+    } catch (err) {
+      setSameImageResult({ status: 'error', message: err instanceof Error ? err.message : 'Unknown error' });
     }
     
     setRunningSameImage(false);
   };
   
   const runSameCardTest = async () => {
-    // For card_art, we can't do same-card-different-image test (only 1 image)
     if (imageSourceA === 'card_art') {
       setSameCardResult({ status: 'error', message: 'Same card test requires training images (multiple photos)' });
       return;
     }
     if (!selectedImageA || imagesA.length < 2) return;
+    
     setRunningSameCard(true);
     setSameCardResult({ status: 'pending', message: 'Running...' });
     
-    // Find a different image from the same card
-    const otherImage = imagesA.find(img => img.id !== selectedImageA.id);
-    if (!otherImage) {
-      setSameCardResult({ status: 'error', message: 'Need at least 2 images for this test' });
-      setRunningSameCard(false);
-      return;
-    }
-    
-    const { data, error } = await compareImages(
-      { training_image_id: selectedImageA.id },
-      { training_image_id: otherImage.id }
-    );
-    
-    if (error) {
-      setSameCardResult({ status: 'error', message: error });
-    } else if (data) {
-      setSameCardData(data);
-      setSameCardResult(evaluateSameCardTest(data.cosine_similarity));
+    try {
+      const otherImage = imagesA.find(img => img.id !== selectedImageA.id);
+      if (!otherImage) {
+        setSameCardResult({ status: 'error', message: 'Need at least 2 images' });
+        setRunningSameCard(false);
+        return;
+      }
+      
+      const emb1 = await computeEmbeddingFromUrl(selectedImageA.image_url);
+      const emb2 = await computeEmbeddingFromUrl(otherImage.image_url);
+      
+      const similarity = cosineSimilarity(emb1, emb2);
+      const norm1 = computeNorm(emb1);
+      const norm2 = computeNorm(emb2);
+      
+      setSameCardData({
+        similarity,
+        norm1,
+        norm2,
+        embedding1First5: emb1.slice(0, 5),
+        embedding2First5: emb2.slice(0, 5),
+      });
+      
+      if (similarity >= THRESHOLDS.SAME_CARD.PASS) {
+        setSameCardResult({ status: 'pass', message: `Good match (${(similarity * 100).toFixed(2)}%)` });
+      } else if (similarity >= THRESHOLDS.SAME_CARD.WARN) {
+        setSameCardResult({ status: 'warn', message: `Moderate similarity (${(similarity * 100).toFixed(2)}%)` });
+      } else {
+        setSameCardResult({ status: 'fail', message: `Low similarity (${(similarity * 100).toFixed(2)}%)` });
+      }
+    } catch (err) {
+      setSameCardResult({ status: 'error', message: err instanceof Error ? err.message : 'Unknown error' });
     }
     
     setRunningSameCard(false);
   };
   
   const runDiffCardTest = async () => {
-    const hasImageA = imageSourceA === 'card_art' ? !!selectedCardA : !!selectedImageA;
-    const hasImageB = imageSourceB === 'card_art' ? !!selectedCardB : !!selectedImageB;
-    if (!hasImageA || !hasImageB) return;
+    const urlA = getImageUrl(imageSourceA, selectedImageA);
+    const urlB = getImageUrl(imageSourceB, selectedImageB);
+    if (!urlA || !urlB || !modelLoaded) return;
+    
     setRunningDiffCard(true);
     setDiffCardResult({ status: 'pending', message: 'Running...' });
     
-    const imageSourceA_param = buildImageSource(imageSourceA, selectedImageA, selectedCardA);
-    const imageSourceB_param = buildImageSource(imageSourceB, selectedImageB, selectedCardB);
-    
-    const { data, error } = await compareImages(imageSourceA_param, imageSourceB_param);
-    
-    if (error) {
-      setDiffCardResult({ status: 'error', message: error });
-    } else if (data) {
-      setDiffCardData(data);
-      setDiffCardResult(evaluateDifferentCardTest(data.cosine_similarity));
+    try {
+      const emb1 = await computeEmbeddingFromUrl(urlA);
+      const emb2 = await computeEmbeddingFromUrl(urlB);
+      
+      const similarity = cosineSimilarity(emb1, emb2);
+      const norm1 = computeNorm(emb1);
+      const norm2 = computeNorm(emb2);
+      
+      setDiffCardData({
+        similarity,
+        norm1,
+        norm2,
+        embedding1First5: emb1.slice(0, 5),
+        embedding2First5: emb2.slice(0, 5),
+      });
+      
+      if (similarity <= THRESHOLDS.DIFFERENT_CARD.PASS) {
+        setDiffCardResult({ status: 'pass', message: `Well separated (${(similarity * 100).toFixed(2)}%)` });
+      } else if (similarity <= THRESHOLDS.DIFFERENT_CARD.WARN) {
+        setDiffCardResult({ status: 'warn', message: `Moderate overlap (${(similarity * 100).toFixed(2)}%)` });
+      } else {
+        setDiffCardResult({ status: 'fail', message: `Too similar (${(similarity * 100).toFixed(2)}%)` });
+      }
+    } catch (err) {
+      setDiffCardResult({ status: 'error', message: err instanceof Error ? err.message : 'Unknown error' });
     }
     
     setRunningDiffCard(false);
@@ -291,7 +445,7 @@ const SanityTests = () => {
     if (selectedImageA) {
       await runPreprocessTest();
       await runSameImageTest();
-      if (imagesA.length >= 2) {
+      if (imagesA.length >= 2 && imageSourceA === 'training') {
         await runSameCardTest();
       }
     }
@@ -321,14 +475,35 @@ const SanityTests = () => {
               </Button>
             </Link>
             <div>
-              <h1 className="text-lg font-bold text-gradient">Sanity Tests</h1>
-              <p className="text-xs text-muted-foreground">Debug & validate image pipeline</p>
+              <h1 className="text-lg font-bold text-gradient">Sanity Tests (CNN)</h1>
+              <p className="text-xs text-muted-foreground">Browser-based MobileNet embeddings</p>
             </div>
           </div>
         </div>
       </header>
 
       <main className="flex-1 container px-4 py-4 space-y-6">
+        {/* Model Status */}
+        {!modelLoaded && (
+          <Card className="border-orange-500/30 bg-orange-500/10">
+            <CardContent className="py-3">
+              <div className="flex items-center gap-2">
+                {loadingModel ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin text-orange-400" />
+                    <span className="text-sm text-orange-400">Loading MobileNet model...</span>
+                  </>
+                ) : (
+                  <>
+                    <XCircle className="w-4 h-4 text-red-400" />
+                    <span className="text-sm text-red-400">Model not loaded. Refresh page to retry.</span>
+                  </>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Summary Bar */}
         <div className="flex items-center justify-between p-3 rounded-lg bg-card border border-border">
           <div className="flex items-center gap-4">
@@ -347,7 +522,7 @@ const SanityTests = () => {
           </div>
           <Button
             onClick={runAllTests}
-            disabled={(!selectedImageA && !selectedCardA) || runningAll}
+            disabled={!selectedImageA || !modelLoaded || runningAll}
             size="sm"
           >
             {runningAll ? (
@@ -397,9 +572,10 @@ const SanityTests = () => {
             {selectedCardA && (
               <div className="flex gap-3 p-3 rounded-lg bg-accent/30">
                 <img
-                  src={`https://otyiezyaqexbgibxgqtl.supabase.co/storage/v1/object/public/riftbound-cards/${selectedCardA.cardId}.webp`}
+                  src={`https://static.dotgg.gg/riftbound/cards/${selectedCardA.cardId}.webp`}
                   alt={selectedCardA.name}
                   className="w-16 h-22 object-cover rounded"
+                  crossOrigin="anonymous"
                   onError={(e) => { (e.target as HTMLImageElement).src = '/placeholder.svg'; }}
                 />
                 <div>
@@ -442,7 +618,7 @@ const SanityTests = () => {
                       </div>
                     ) : selectedImageA ? (
                       <div className="w-24 h-24 rounded overflow-hidden border-2 border-primary">
-                        <img src={selectedImageA.image_url} alt="" className="w-full h-full object-cover" />
+                        <img src={selectedImageA.image_url} alt="" className="w-full h-full object-cover" crossOrigin="anonymous" />
                       </div>
                     ) : (
                       <p className="text-sm text-muted-foreground">No card art available</p>
@@ -469,7 +645,7 @@ const SanityTests = () => {
                               selectedImageA?.id === img.id ? "border-primary" : "border-transparent hover:border-muted"
                             )}
                           >
-                            <img src={img.image_url} alt="" className="w-full h-full object-cover" />
+                            <img src={img.image_url} alt="" className="w-full h-full object-cover" crossOrigin="anonymous" />
                           </button>
                         ))}
                       </div>
@@ -495,7 +671,7 @@ const SanityTests = () => {
           <CardContent className="space-y-4">
             <Button
               onClick={runPreprocessTest}
-              disabled={!selectedImageA || runningPreprocess}
+              disabled={!selectedImageA || !modelLoaded || runningPreprocess}
               size="sm"
             >
               {runningPreprocess ? (
@@ -520,69 +696,42 @@ const SanityTests = () => {
             
             {preprocessData && (
               <div className="space-y-4">
-                {/* Image Comparison */}
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <p className="text-xs text-muted-foreground font-medium">Original</p>
-                    {preprocessData.original_image_url ? (
-                      <img 
-                        src={preprocessData.original_image_url} 
-                        alt="Original" 
-                        className="w-full aspect-square object-cover rounded-lg border border-border"
-                      />
-                    ) : selectedImageA ? (
-                      <img 
-                        src={selectedImageA.image_url} 
-                        alt="Original" 
-                        className="w-full aspect-square object-cover rounded-lg border border-border"
-                      />
-                    ) : (
-                      <div className="w-full aspect-square bg-muted rounded-lg flex items-center justify-center text-muted-foreground text-xs">
-                        No image
-                      </div>
-                    )}
+                    <img 
+                      src={preprocessData.originalUrl} 
+                      alt="Original" 
+                      className="w-full aspect-square object-cover rounded-lg border border-border"
+                      crossOrigin="anonymous"
+                    />
                   </div>
                   <div className="space-y-2">
                     <p className="text-xs text-muted-foreground font-medium">Preprocessed ({preprocessData.width}×{preprocessData.height})</p>
-                    {preprocessData.preprocessed_preview ? (
-                      <img 
-                        src={preprocessData.preprocessed_preview} 
-                        alt="Preprocessed" 
-                        className="w-full aspect-square object-contain rounded-lg border border-border bg-black"
-                      />
-                    ) : (
-                      <div className="w-full aspect-square bg-muted rounded-lg flex items-center justify-center text-muted-foreground text-xs">
-                        No preview
-                      </div>
-                    )}
+                    <img 
+                      src={preprocessData.preprocessedDataUrl} 
+                      alt="Preprocessed" 
+                      className="w-full aspect-square object-contain rounded-lg border border-border bg-black"
+                    />
                   </div>
                 </div>
                 
-                {/* Stats */}
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-xs p-3 rounded-lg bg-muted/30">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs p-3 rounded-lg bg-muted/30">
                   <div>
                     <p className="text-muted-foreground">Output Size</p>
                     <p className="font-medium">{preprocessData.width}×{preprocessData.height}</p>
                   </div>
                   <div>
                     <p className="text-muted-foreground">Pixel Range</p>
-                    <p className="font-medium">
-                      {preprocessData.stats.min_pixel !== undefined 
-                        ? `${preprocessData.stats.min_pixel.toFixed(2)} – ${preprocessData.stats.max_pixel?.toFixed(2)}`
-                        : 'N/A'}
-                    </p>
+                    <p className="font-medium">{preprocessData.minPixel.toFixed(2)} – {preprocessData.maxPixel.toFixed(2)}</p>
                   </div>
                   <div>
                     <p className="text-muted-foreground">Mean Brightness</p>
-                    <p className="font-medium">{(preprocessData.stats.mean_pixel_value * 100).toFixed(1)}%</p>
+                    <p className="font-medium">{(preprocessData.meanBrightness * 100).toFixed(1)}%</p>
                   </div>
                   <div>
                     <p className="text-muted-foreground">Contrast (Std)</p>
-                    <p className="font-medium">{preprocessData.stats.std_pixel_value.toFixed(3)}</p>
-                  </div>
-                  <div>
-                    <p className="text-muted-foreground">Card Region</p>
-                    <p className="font-medium">{preprocessData.stats.has_detected_card_region ? 'Detected' : 'Not detected'}</p>
+                    <p className="font-medium">{preprocessData.stdBrightness.toFixed(3)}</p>
                   </div>
                 </div>
               </div>
@@ -604,7 +753,7 @@ const SanityTests = () => {
           <CardContent className="space-y-4">
             <Button
               onClick={runSameImageTest}
-              disabled={!selectedImageA || runningSameImage}
+              disabled={!selectedImageA || !modelLoaded || runningSameImage}
               size="sm"
             >
               {runningSameImage ? (
@@ -631,15 +780,15 @@ const SanityTests = () => {
               <div className="grid grid-cols-3 gap-4 text-xs">
                 <div>
                   <p className="text-muted-foreground">Cosine Similarity</p>
-                  <p className="text-lg font-mono">{(sameImageData.cosine_similarity * 100).toFixed(2)}%</p>
+                  <p className="text-lg font-mono">{(sameImageData.similarity * 100).toFixed(2)}%</p>
                 </div>
                 <div>
-                  <p className="text-muted-foreground">Norm 1</p>
-                  <p className="font-mono">{sameImageData.embedding1.norm.toFixed(4)}</p>
+                  <p className="text-muted-foreground">Norm 1 / Norm 2</p>
+                  <p className="font-mono">{sameImageData.norm1.toFixed(4)} / {sameImageData.norm2.toFixed(4)}</p>
                 </div>
                 <div>
-                  <p className="text-muted-foreground">Trailing Zeros</p>
-                  <p className="font-mono">{sameImageData.embedding1.trailing_zero_count}</p>
+                  <p className="text-muted-foreground">Dimension</p>
+                  <p className="font-mono">{EMBEDDING_SIZE}</p>
                 </div>
               </div>
             )}
@@ -652,7 +801,7 @@ const SanityTests = () => {
             <div className="flex items-center justify-between">
               <div>
                 <CardTitle className="text-base">Test 3: Same Card, Different Images</CardTitle>
-                <CardDescription>Different photos of same card (expect ≥90% similarity)</CardDescription>
+                <CardDescription>Different photos of same card (expect ≥85% similarity)</CardDescription>
               </div>
               {sameCardResult && <StatusBadge status={sameCardResult.status} />}
             </div>
@@ -660,7 +809,7 @@ const SanityTests = () => {
           <CardContent className="space-y-4">
             <Button
               onClick={runSameCardTest}
-              disabled={!selectedImageA || imagesA.length < 2 || runningSameCard}
+              disabled={!selectedImageA || imageSourceA !== 'training' || imagesA.length < 2 || !modelLoaded || runningSameCard}
               size="sm"
             >
               {runningSameCard ? (
@@ -671,7 +820,11 @@ const SanityTests = () => {
               Run Test
             </Button>
             
-            {imagesA.length < 2 && selectedCardA && (
+            {imageSourceA === 'card_art' && selectedCardA && (
+              <p className="text-xs text-muted-foreground">Switch to Training Images to run this test</p>
+            )}
+            
+            {imageSourceA === 'training' && imagesA.length < 2 && selectedCardA && (
               <p className="text-xs text-muted-foreground">Need at least 2 training images for this card</p>
             )}
             
@@ -691,15 +844,15 @@ const SanityTests = () => {
               <div className="grid grid-cols-3 gap-4 text-xs">
                 <div>
                   <p className="text-muted-foreground">Cosine Similarity</p>
-                  <p className="text-lg font-mono">{(sameCardData.cosine_similarity * 100).toFixed(2)}%</p>
+                  <p className="text-lg font-mono">{(sameCardData.similarity * 100).toFixed(2)}%</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Norm 1 / Norm 2</p>
-                  <p className="font-mono">{sameCardData.embedding1.norm.toFixed(4)} / {sameCardData.embedding2.norm.toFixed(4)}</p>
+                  <p className="font-mono">{sameCardData.norm1.toFixed(4)} / {sameCardData.norm2.toFixed(4)}</p>
                 </div>
                 <div>
-                  <p className="text-muted-foreground">Dot Product</p>
-                  <p className="font-mono">{sameCardData.dot_product.toFixed(4)}</p>
+                  <p className="text-muted-foreground">Dimension</p>
+                  <p className="font-mono">{EMBEDDING_SIZE}</p>
                 </div>
               </div>
             )}
@@ -744,9 +897,10 @@ const SanityTests = () => {
             {selectedCardB && (
               <div className="flex gap-3 p-3 rounded-lg bg-accent/30">
                 <img
-                  src={`https://otyiezyaqexbgibxgqtl.supabase.co/storage/v1/object/public/riftbound-cards/${selectedCardB.cardId}.webp`}
+                  src={`https://static.dotgg.gg/riftbound/cards/${selectedCardB.cardId}.webp`}
                   alt={selectedCardB.name}
                   className="w-16 h-22 object-cover rounded"
+                  crossOrigin="anonymous"
                   onError={(e) => { (e.target as HTMLImageElement).src = '/placeholder.svg'; }}
                 />
                 <div>
@@ -789,7 +943,7 @@ const SanityTests = () => {
                       </div>
                     ) : selectedImageB ? (
                       <div className="w-24 h-24 rounded overflow-hidden border-2 border-primary">
-                        <img src={selectedImageB.image_url} alt="" className="w-full h-full object-cover" />
+                        <img src={selectedImageB.image_url} alt="" className="w-full h-full object-cover" crossOrigin="anonymous" />
                       </div>
                     ) : (
                       <p className="text-sm text-muted-foreground">No card art available</p>
@@ -816,7 +970,7 @@ const SanityTests = () => {
                               selectedImageB?.id === img.id ? "border-primary" : "border-transparent hover:border-muted"
                             )}
                           >
-                            <img src={img.image_url} alt="" className="w-full h-full object-cover" />
+                            <img src={img.image_url} alt="" className="w-full h-full object-cover" crossOrigin="anonymous" />
                           </button>
                         ))}
                       </div>
@@ -834,7 +988,7 @@ const SanityTests = () => {
             <div className="flex items-center justify-between">
               <div>
                 <CardTitle className="text-base">Test 4: Different Card Separation</CardTitle>
-                <CardDescription>Different cards should be dissimilar (expect ≤75% similarity)</CardDescription>
+                <CardDescription>Different cards should be dissimilar (expect ≤60% similarity)</CardDescription>
               </div>
               {diffCardResult && <StatusBadge status={diffCardResult.status} />}
             </div>
@@ -842,7 +996,7 @@ const SanityTests = () => {
           <CardContent className="space-y-4">
             <Button
               onClick={runDiffCardTest}
-              disabled={!selectedImageA || !selectedImageB || runningDiffCard}
+              disabled={!selectedImageA || !selectedImageB || !modelLoaded || runningDiffCard}
               size="sm"
             >
               {runningDiffCard ? (
@@ -852,10 +1006,6 @@ const SanityTests = () => {
               )}
               Run Test
             </Button>
-            
-            {(!selectedImageA || !selectedImageB) && (
-              <p className="text-xs text-muted-foreground">Select images from both Card A and Card B</p>
-            )}
             
             {diffCardResult && (
               <p className={cn(
@@ -873,18 +1023,36 @@ const SanityTests = () => {
               <div className="grid grid-cols-3 gap-4 text-xs">
                 <div>
                   <p className="text-muted-foreground">Cosine Similarity</p>
-                  <p className="text-lg font-mono">{(diffCardData.cosine_similarity * 100).toFixed(2)}%</p>
+                  <p className="text-lg font-mono">{(diffCardData.similarity * 100).toFixed(2)}%</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Norm A / Norm B</p>
-                  <p className="font-mono">{diffCardData.embedding1.norm.toFixed(4)} / {diffCardData.embedding2.norm.toFixed(4)}</p>
+                  <p className="font-mono">{diffCardData.norm1.toFixed(4)} / {diffCardData.norm2.toFixed(4)}</p>
                 </div>
                 <div>
-                  <p className="text-muted-foreground">Dot Product</p>
-                  <p className="font-mono">{diffCardData.dot_product.toFixed(4)}</p>
+                  <p className="text-muted-foreground">Dimension</p>
+                  <p className="font-mono">{EMBEDDING_SIZE}</p>
                 </div>
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        {/* Link to Admin */}
+        <Card>
+          <CardContent className="py-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">Need to rebuild embeddings?</p>
+                <p className="text-xs text-muted-foreground">Use the Embedding Admin page to compute CNN embeddings for all cards</p>
+              </div>
+              <Link to="/embedding-admin">
+                <Button variant="outline" size="sm">
+                  <RefreshCw className="w-4 h-4 mr-2" />
+                  Embedding Admin
+                </Button>
+              </Link>
+            </div>
           </CardContent>
         </Card>
       </main>
