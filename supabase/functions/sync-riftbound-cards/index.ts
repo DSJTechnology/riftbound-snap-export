@@ -17,7 +17,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const BATCH_SIZE = 5;
+const BATCH_SIZE = 2; // Small batch to avoid WORKER_LIMIT errors
 
 // Diagnostic cards to log
 const DIAGNOSTIC_CARDS = ['OGN-001', 'OGN-050', 'OGN-100', 'OGN-150', 'SFD-001'];
