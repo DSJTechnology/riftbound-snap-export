@@ -11,7 +11,7 @@ const corsHeaders = {
 // Configuration - MUST match client
 const EMBEDDING_SIZE = 256;
 const OUTPUT_SIZE = 224;
-const BATCH_SIZE = 25;
+const BATCH_SIZE = 5;
 
 // Card dimensions for normalization
 const CARD_WIDTH = 500;
