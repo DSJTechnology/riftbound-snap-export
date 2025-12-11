@@ -18,13 +18,18 @@ export function CardDatabaseStatus() {
   const [expandedSets, setExpandedSets] = useState<Set<string>>(new Set());
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState<{ processed: number; total: number } | null>(null);
+  const [syncingSet, setSyncingSet] = useState<string | null>(null);
+  const [syncingCard, setSyncingCard] = useState<string | null>(null);
 
-  const handleSyncCards = async () => {
+  const handleSyncCards = async (setName?: string, cardId?: string) => {
     setIsSyncing(true);
     setSyncProgress(null);
+    if (setName) setSyncingSet(setName);
+    if (cardId) setSyncingCard(cardId);
     
     try {
-      toast.info('Syncing cards... Processing in batches.');
+      const label = cardId ? `card ${cardId}` : setName ? `set "${setName}"` : 'all cards';
+      toast.info(`Syncing ${label}...`);
       
       let offset = 0;
       let totalProcessed = 0;
@@ -34,7 +39,7 @@ export function CardDatabaseStatus() {
       
       while (hasMore) {
         const { data, error } = await supabase.functions.invoke('sync-riftbound-cards', {
-          body: { offset }
+          body: { offset, setName, cardId }
         });
         
         if (error) {
@@ -56,8 +61,7 @@ export function CardDatabaseStatus() {
         console.log(`[Sync] Progress: ${totalProcessed}/${totalCards} (offset: ${offset}, hasMore: ${hasMore})`);
       }
       
-      toast.success(`Synced ${totalProcessed} cards with embeddings (${totalFailed} failed)`);
-      // Refresh both the hash index and embeddings
+      toast.success(`Synced ${totalProcessed} cards (${totalFailed} failed)`);
       await Promise.all([refreshIndex(), refreshEmbeddings()]);
     } catch (err) {
       console.error('Sync error:', err);
@@ -65,6 +69,8 @@ export function CardDatabaseStatus() {
     } finally {
       setIsSyncing(false);
       setSyncProgress(null);
+      setSyncingSet(null);
+      setSyncingCard(null);
     }
   };
 
@@ -137,15 +143,15 @@ export function CardDatabaseStatus() {
           </div>
         )}
 
-        {/* Sync button */}
+        {/* Sync All button */}
         <Button
-          onClick={handleSyncCards}
+          onClick={() => handleSyncCards()}
           disabled={isSyncing}
           variant="default"
           size="sm"
           className="w-full"
         >
-          {isSyncing ? (
+          {isSyncing && !syncingSet && !syncingCard ? (
             <>
               <Loader2 className="w-4 h-4 mr-2 animate-spin" />
               {syncProgress 
@@ -156,13 +162,13 @@ export function CardDatabaseStatus() {
           ) : (
             <>
               <RefreshCw className="w-4 h-4 mr-2" />
-              Sync Cards from dotGG
+              Sync All Cards
             </>
           )}
         </Button>
 
         <p className="text-xs text-muted-foreground">
-          Downloads all card images, computes recognition embeddings, and stores everything in the cloud. This may take several minutes for the first sync.
+          Downloads all card images and computes recognition embeddings. Use the set-level sync buttons below for faster partial updates.
         </p>
 
         {/* Embedding status */}
@@ -187,35 +193,70 @@ export function CardDatabaseStatus() {
                     open={expandedSets.has(setName)}
                     onOpenChange={() => toggleSet(setName)}
                   >
-                    <CollapsibleTrigger className="flex items-center justify-between w-full px-3 py-2 rounded-md bg-muted/50 hover:bg-muted transition-colors text-sm">
-                      <div className="flex items-center gap-2">
-                        {expandedSets.has(setName) ? (
-                          <ChevronDown className="w-4 h-4 text-muted-foreground" />
+                    <div className="flex items-center gap-1">
+                      <CollapsibleTrigger className="flex items-center justify-between flex-1 px-3 py-2 rounded-md bg-muted/50 hover:bg-muted transition-colors text-sm">
+                        <div className="flex items-center gap-2">
+                          {expandedSets.has(setName) ? (
+                            <ChevronDown className="w-4 h-4 text-muted-foreground" />
+                          ) : (
+                            <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                          )}
+                          <span className="text-foreground truncate">{setName}</span>
+                        </div>
+                        <span className="text-muted-foreground font-mono text-xs ml-2 shrink-0">
+                          {setCards.length} cards
+                        </span>
+                      </CollapsibleTrigger>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 shrink-0"
+                        disabled={isSyncing}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSyncCards(setName);
+                        }}
+                        title={`Sync ${setName}`}
+                      >
+                        {isSyncing && syncingSet === setName ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
                         ) : (
-                          <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                          <RefreshCw className="w-3.5 h-3.5" />
                         )}
-                        <span className="text-foreground truncate">{setName}</span>
-                      </div>
-                      <span className="text-muted-foreground font-mono text-xs ml-2 shrink-0">
-                        {setCards.length} cards
-                      </span>
-                    </CollapsibleTrigger>
+                      </Button>
+                    </div>
                     <CollapsibleContent>
                       <div className="ml-6 mt-1 space-y-0.5 max-h-48 overflow-y-auto">
                         {setCards.map(card => (
                           <div
                             key={card.cardId}
-                            className="flex items-center justify-between px-2 py-1.5 text-xs rounded hover:bg-muted/30"
+                            className="flex items-center justify-between px-2 py-1.5 text-xs rounded hover:bg-muted/30 group"
                           >
                             <div className="flex items-center gap-2 min-w-0">
                               <span className="font-mono text-primary shrink-0">{card.cardId}</span>
                               <span className="text-foreground truncate">{card.name}</span>
                             </div>
-                            {card.rarity && (
-                              <span className="text-muted-foreground text-[10px] shrink-0 ml-2">
-                                {card.rarity}
-                              </span>
-                            )}
+                            <div className="flex items-center gap-1 shrink-0 ml-2">
+                              {card.rarity && (
+                                <span className="text-muted-foreground text-[10px]">
+                                  {card.rarity}
+                                </span>
+                              )}
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                                disabled={isSyncing}
+                                onClick={() => handleSyncCards(undefined, card.cardId)}
+                                title={`Refresh ${card.cardId}`}
+                              >
+                                {isSyncing && syncingCard === card.cardId ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <RefreshCw className="w-3 h-3" />
+                                )}
+                              </Button>
+                            </div>
                           </div>
                         ))}
                       </div>
