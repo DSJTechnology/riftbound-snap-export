@@ -464,10 +464,18 @@ const SanityTests = () => {
                 </div>
                 
                 {/* Stats */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs p-3 rounded-lg bg-muted/30">
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-xs p-3 rounded-lg bg-muted/30">
                   <div>
                     <p className="text-muted-foreground">Output Size</p>
                     <p className="font-medium">{preprocessData.width}×{preprocessData.height}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Pixel Range</p>
+                    <p className="font-medium">
+                      {preprocessData.stats.min_pixel !== undefined 
+                        ? `${preprocessData.stats.min_pixel.toFixed(2)} – ${preprocessData.stats.max_pixel?.toFixed(2)}`
+                        : 'N/A'}
+                    </p>
                   </div>
                   <div>
                     <p className="text-muted-foreground">Mean Brightness</p>

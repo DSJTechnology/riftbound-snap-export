@@ -1,5 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.2";
+import { decode as decodePng } from "https://deno.land/x/pngs@0.1.1/mod.ts";
+import { decode as decodeJpeg } from "https://esm.sh/jpeg-js@0.4.4";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -8,8 +10,6 @@ const corsHeaders = {
 
 // Configuration - MUST match client
 const OUTPUT_SIZE = 224;
-const CARD_WIDTH = 500;
-const CARD_HEIGHT = 700;
 const ART_REGION = {
   LEFT: 0.06,
   RIGHT: 0.94,
@@ -18,76 +18,62 @@ const ART_REGION = {
 };
 
 /**
- * Decode image bytes to pseudo-pixels for processing
+ * Detect image format from bytes
+ */
+function detectImageFormat(bytes: Uint8Array): 'png' | 'jpeg' | 'webp' | 'unknown' {
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47) {
+    return 'png';
+  }
+  if (bytes[0] === 0xFF && bytes[1] === 0xD8) {
+    return 'jpeg';
+  }
+  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) {
+    return 'webp';
+  }
+  return 'unknown';
+}
+
+/**
+ * Decode image bytes to RGBA pixels using proper decoders
  */
 function decodeImageToPixels(imageBytes: Uint8Array): { width: number; height: number; pixels: Uint8Array } {
-  // Parse dimensions from image header (supports PNG, JPEG, WebP)
-  let width = 400;
-  let height = 560;
+  const format = detectImageFormat(imageBytes);
+  console.log(`[debug-preprocess] Detected format: ${format}`);
   
-  // Check for PNG
-  if (imageBytes[0] === 0x89 && imageBytes[1] === 0x50) {
-    width = (imageBytes[16] << 24) | (imageBytes[17] << 16) | (imageBytes[18] << 8) | imageBytes[19];
-    height = (imageBytes[20] << 24) | (imageBytes[21] << 16) | (imageBytes[22] << 8) | imageBytes[23];
-  }
-  // Check for JPEG
-  else if (imageBytes[0] === 0xFF && imageBytes[1] === 0xD8) {
-    for (let i = 2; i < imageBytes.length - 10; i++) {
-      if (imageBytes[i] === 0xFF && (imageBytes[i + 1] === 0xC0 || imageBytes[i + 1] === 0xC2)) {
-        height = (imageBytes[i + 5] << 8) | imageBytes[i + 6];
-        width = (imageBytes[i + 7] << 8) | imageBytes[i + 8];
-        break;
-      }
-    }
-  }
-  // Check for WebP
-  else if (imageBytes[0] === 0x52 && imageBytes[1] === 0x49 && imageBytes[2] === 0x46 && imageBytes[3] === 0x46) {
-    for (let i = 12; i < Math.min(imageBytes.length - 10, 100); i++) {
-      if (imageBytes[i] === 0x56 && imageBytes[i+1] === 0x50 && imageBytes[i+2] === 0x38) {
-        if (imageBytes[i+3] === 0x20) {
-          const frameTag = i + 8 + 3;
-          if (frameTag + 6 < imageBytes.length) {
-            width = (imageBytes[frameTag + 1] | (imageBytes[frameTag + 2] << 8)) & 0x3fff;
-            height = (imageBytes[frameTag + 3] | (imageBytes[frameTag + 4] << 8)) & 0x3fff;
-          }
-        } else if (imageBytes[i+3] === 0x4C) {
-          const sigOffset = i + 8 + 1;
-          if (sigOffset + 4 < imageBytes.length) {
-            const bits = imageBytes[sigOffset] | (imageBytes[sigOffset + 1] << 8) | 
-                        (imageBytes[sigOffset + 2] << 16) | (imageBytes[sigOffset + 3] << 24);
-            width = (bits & 0x3fff) + 1;
-            height = ((bits >> 14) & 0x3fff) + 1;
-          }
-        }
-        break;
-      }
+  if (format === 'png') {
+    try {
+      const decoded = decodePng(imageBytes);
+      // pngs returns {width, height, image} where image is RGBA Uint8Array
+      console.log(`[debug-preprocess] PNG decoded: ${decoded.width}x${decoded.height}`);
+      return {
+        width: decoded.width,
+        height: decoded.height,
+        pixels: new Uint8Array(decoded.image),
+      };
+    } catch (e) {
+      console.error('[debug-preprocess] PNG decode error:', e);
+      throw new Error(`PNG decode failed: ${e}`);
     }
   }
   
-  // Create pseudo-pixels by sampling compressed data
-  const pixels = new Uint8Array(width * height * 4);
-  const dataStart = Math.min(50, Math.floor(imageBytes.length * 0.05));
-  const dataLen = imageBytes.length - dataStart;
-  
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const pixelIdx = (y * width + x) * 4;
-      const normalizedX = x / width;
-      const normalizedY = y / height;
-      
-      const rPos = dataStart + Math.floor(normalizedY * normalizedX * dataLen) % dataLen;
-      const gPos = dataStart + Math.floor((1 - normalizedY) * normalizedX * dataLen) % dataLen;
-      const bPos = dataStart + Math.floor(normalizedY * (1 - normalizedX) * dataLen) % dataLen;
-      const localOffset = Math.floor((x + y * 7) % Math.max(1, dataLen / 100)) * 3;
-      
-      pixels[pixelIdx] = imageBytes[(rPos + localOffset) % imageBytes.length] || 128;
-      pixels[pixelIdx + 1] = imageBytes[(gPos + localOffset) % imageBytes.length] || 128;
-      pixels[pixelIdx + 2] = imageBytes[(bPos + localOffset) % imageBytes.length] || 128;
-      pixels[pixelIdx + 3] = 255;
+  if (format === 'jpeg') {
+    try {
+      const decoded = decodeJpeg(imageBytes, { useTArray: true, formatAsRGBA: true });
+      console.log(`[debug-preprocess] JPEG decoded: ${decoded.width}x${decoded.height}`);
+      return {
+        width: decoded.width,
+        height: decoded.height,
+        pixels: new Uint8Array(decoded.data),
+      };
+    } catch (e) {
+      console.error('[debug-preprocess] JPEG decode error:', e);
+      throw new Error(`JPEG decode failed: ${e}`);
     }
   }
   
-  return { width, height, pixels };
+  // For WebP and unknown formats, try JPEG decoder as fallback
+  // (some images mislabeled, or we can convert via fetch)
+  throw new Error(`Unsupported image format: ${format}. Please use PNG or JPEG.`);
 }
 
 /**
@@ -128,22 +114,42 @@ function cropToArtRegion(pixels: Uint8Array, srcWidth: number, srcHeight: number
 }
 
 /**
- * Resize image to OUTPUT_SIZE
+ * Resize image to OUTPUT_SIZE using bilinear interpolation
  */
 function resizeImage(pixels: Uint8Array, srcWidth: number, srcHeight: number): Uint8Array {
   const resized = new Uint8Array(OUTPUT_SIZE * OUTPUT_SIZE * 4);
   
+  const xRatio = srcWidth / OUTPUT_SIZE;
+  const yRatio = srcHeight / OUTPUT_SIZE;
+  
   for (let y = 0; y < OUTPUT_SIZE; y++) {
     for (let x = 0; x < OUTPUT_SIZE; x++) {
-      const srcX = Math.floor((x / OUTPUT_SIZE) * srcWidth);
-      const srcY = Math.floor((y / OUTPUT_SIZE) * srcHeight);
-      const srcIdx = (srcY * srcWidth + srcX) * 4;
+      // Use bilinear interpolation for smoother results
+      const srcX = x * xRatio;
+      const srcY = y * yRatio;
+      
+      const x0 = Math.floor(srcX);
+      const y0 = Math.floor(srcY);
+      const x1 = Math.min(x0 + 1, srcWidth - 1);
+      const y1 = Math.min(y0 + 1, srcHeight - 1);
+      
+      const xFrac = srcX - x0;
+      const yFrac = srcY - y0;
+      
       const dstIdx = (y * OUTPUT_SIZE + x) * 4;
       
-      resized[dstIdx] = pixels[srcIdx] || 0;
-      resized[dstIdx + 1] = pixels[srcIdx + 1] || 0;
-      resized[dstIdx + 2] = pixels[srcIdx + 2] || 0;
-      resized[dstIdx + 3] = 255;
+      for (let c = 0; c < 4; c++) {
+        const v00 = pixels[(y0 * srcWidth + x0) * 4 + c] || 0;
+        const v01 = pixels[(y0 * srcWidth + x1) * 4 + c] || 0;
+        const v10 = pixels[(y1 * srcWidth + x0) * 4 + c] || 0;
+        const v11 = pixels[(y1 * srcWidth + x1) * 4 + c] || 0;
+        
+        const v0 = v00 * (1 - xFrac) + v01 * xFrac;
+        const v1 = v10 * (1 - xFrac) + v11 * xFrac;
+        const v = v0 * (1 - yFrac) + v1 * yFrac;
+        
+        resized[dstIdx + c] = Math.round(v);
+      }
     }
   }
   
@@ -151,11 +157,15 @@ function resizeImage(pixels: Uint8Array, srcWidth: number, srcHeight: number): U
 }
 
 /**
- * Convert pixels to base64 BMP format (browser-displayable)
+ * Convert RGBA pixels to base64 BMP format (browser-displayable)
  */
 function pixelsToBMP(pixels: Uint8Array, width: number, height: number): string {
+  // Calculate row padding (rows must be multiple of 4 bytes)
+  const rowPadding = (4 - (width * 3) % 4) % 4;
+  const pixelDataSize = (width * 3 + rowPadding) * height;
+  const fileSize = 54 + pixelDataSize;
+  
   // BMP file header (14 bytes)
-  const fileSize = 54 + width * height * 3 + (width * 3 % 4) * height;
   const bmpFileHeader = new Uint8Array([
     0x42, 0x4D,                           // "BM"
     fileSize & 0xFF, (fileSize >> 8) & 0xFF, (fileSize >> 16) & 0xFF, (fileSize >> 24) & 0xFF,
@@ -178,9 +188,6 @@ function pixelsToBMP(pixels: Uint8Array, width: number, height: number): string 
     0, 0, 0, 0                            // Important colors
   ]);
 
-  // Calculate row padding (rows must be multiple of 4 bytes)
-  const rowPadding = (4 - (width * 3) % 4) % 4;
-  const pixelDataSize = (width * 3 + rowPadding) * height;
   const pixelData = new Uint8Array(pixelDataSize);
 
   // BMP stores rows bottom-to-top, BGR format
@@ -210,28 +217,34 @@ function pixelsToBMP(pixels: Uint8Array, width: number, height: number): string 
 }
 
 /**
- * Compute pixel statistics
+ * Compute pixel statistics on the resized RGB image (pre-normalized)
  */
-function computeStats(pixels: Uint8Array): { mean: number; std: number } {
+function computeStats(pixels: Uint8Array): { mean: number; std: number; min: number; max: number } {
   let sum = 0;
+  let min = 1;
+  let max = 0;
+  const values: number[] = [];
   const count = pixels.length / 4;
   
   for (let i = 0; i < pixels.length; i += 4) {
-    const intensity = (pixels[i] + pixels[i + 1] + pixels[i + 2]) / 3;
+    // Average RGB to get intensity (0-1 range)
+    const intensity = (pixels[i] + pixels[i + 1] + pixels[i + 2]) / 3 / 255;
+    values.push(intensity);
     sum += intensity;
+    if (intensity < min) min = intensity;
+    if (intensity > max) max = intensity;
   }
   
-  const mean = sum / count / 255;
+  const mean = sum / count;
   
   let variance = 0;
-  for (let i = 0; i < pixels.length; i += 4) {
-    const intensity = (pixels[i] + pixels[i + 1] + pixels[i + 2]) / 3 / 255;
-    variance += Math.pow(intensity - mean, 2);
+  for (const v of values) {
+    variance += Math.pow(v - mean, 2);
   }
   
   const std = Math.sqrt(variance / count);
   
-  return { mean, std };
+  return { mean, std, min, max };
 }
 
 serve(async (req) => {
@@ -287,7 +300,7 @@ serve(async (req) => {
     
     console.log(`[debug-preprocess] Processing image, bytes: ${imageBytes.length}`);
     
-    // Decode image
+    // Decode image to proper RGBA pixels
     const decoded = decodeImageToPixels(imageBytes);
     console.log(`[debug-preprocess] Decoded: ${decoded.width}x${decoded.height}`);
     
@@ -295,13 +308,13 @@ serve(async (req) => {
     const art = cropToArtRegion(decoded.pixels, decoded.width, decoded.height);
     console.log(`[debug-preprocess] Art region: ${art.width}x${art.height}`);
     
-    // Resize to output size
+    // Resize to output size (this is the pre-normalized RGB image)
     const resized = resizeImage(art.pixels, art.width, art.height);
     
-    // Compute stats
+    // Compute stats on the resized image (0-1 normalized values for stats)
     const stats = computeStats(resized);
     
-    // Create preview as BMP image
+    // Create preview as BMP image from the resized RGB (pre-normalized)
     const previewBmp = pixelsToBMP(resized, OUTPUT_SIZE, OUTPUT_SIZE);
     
     return new Response(JSON.stringify({
@@ -311,6 +324,8 @@ serve(async (req) => {
       width: OUTPUT_SIZE,
       height: OUTPUT_SIZE,
       stats: {
+        min_pixel: parseFloat(stats.min.toFixed(4)),
+        max_pixel: parseFloat(stats.max.toFixed(4)),
         mean_pixel_value: parseFloat(stats.mean.toFixed(4)),
         std_pixel_value: parseFloat(stats.std.toFixed(4)),
         channels: 3,

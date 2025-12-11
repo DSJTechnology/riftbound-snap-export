@@ -7,6 +7,8 @@ export interface PreprocessResult {
   width: number;
   height: number;
   stats: {
+    min_pixel?: number;
+    max_pixel?: number;
     mean_pixel_value: number;
     std_pixel_value: number;
     channels: number;
