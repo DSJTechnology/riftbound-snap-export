@@ -65,36 +65,58 @@ serve(async (req: Request) => {
       );
     }
 
-    // Construct search query
-    const searchQuery = `riftbound tcg "${searchName}" card`;
-    console.log(`[training-search-images] Searching for: ${searchQuery}`);
+    // Try multiple search queries to find images
+    const searchQueries = [
+      `"${searchName}" riftbound card`,
+      `${searchName} riftbound tcg`,
+      `${searchName} trading card game`,
+      `${searchName} card game art`,
+    ];
 
-    // Call Google Custom Search API
-    const googleUrl = new URL('https://www.googleapis.com/customsearch/v1');
-    googleUrl.searchParams.set('key', googleApiKey);
-    googleUrl.searchParams.set('cx', searchEngineId);
-    googleUrl.searchParams.set('q', searchQuery);
-    googleUrl.searchParams.set('searchType', 'image');
-    googleUrl.searchParams.set('num', '10');
-    googleUrl.searchParams.set('safe', 'active');
+    const allResults: ImageResult[] = [];
+    const seenUrls = new Set<string>();
 
-    const googleResponse = await fetch(googleUrl.toString());
-    const googleData = await googleResponse.json();
+    for (const searchQuery of searchQueries) {
+      if (allResults.length >= 15) break; // Stop if we have enough results
+      
+      console.log(`[training-search-images] Searching for: ${searchQuery}`);
 
-    if (!googleResponse.ok) {
-      console.error('[training-search-images] Google API error:', googleData);
-      return new Response(
-        JSON.stringify({ error: 'Image search failed', details: googleData }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      // Call Google Custom Search API
+      const googleUrl = new URL('https://www.googleapis.com/customsearch/v1');
+      googleUrl.searchParams.set('key', googleApiKey);
+      googleUrl.searchParams.set('cx', searchEngineId);
+      googleUrl.searchParams.set('q', searchQuery);
+      googleUrl.searchParams.set('searchType', 'image');
+      googleUrl.searchParams.set('num', '10');
+      googleUrl.searchParams.set('safe', 'active');
+
+      try {
+        const googleResponse = await fetch(googleUrl.toString());
+        const googleData = await googleResponse.json();
+
+        if (!googleResponse.ok) {
+          console.error('[training-search-images] Google API error:', googleData);
+          continue; // Try next query
+        }
+
+        // Parse and deduplicate results
+        for (const item of googleData.items || []) {
+          const url = item.link;
+          if (!seenUrls.has(url)) {
+            seenUrls.add(url);
+            allResults.push({
+              thumbnailUrl: item.image?.thumbnailLink || url,
+              originalUrl: url,
+              title: item.title || 'Unknown',
+            });
+          }
+        }
+      } catch (err) {
+        console.error(`[training-search-images] Error with query "${searchQuery}":`, err);
+      }
     }
 
-    // Parse results
-    const results: ImageResult[] = (googleData.items || []).map((item: any) => ({
-      thumbnailUrl: item.image?.thumbnailLink || item.link,
-      originalUrl: item.link,
-      title: item.title || 'Unknown',
-    }));
+    const results = allResults.slice(0, 20); // Limit to 20 results
 
     console.log(`[training-search-images] Found ${results.length} images for "${searchName}"`);
 
