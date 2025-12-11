@@ -4,12 +4,11 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.2";
 
 // Import shared decoder and preprocessing
 import {
-  decodeImageToPixels,
+  fetchAndDecodeImage,
   cropToArtRegion,
   resizeImage,
   extractFeaturesFromPixels,
   l2Normalize,
-  EMBEDDING_SIZE,
   OUTPUT_SIZE,
 } from "../_shared/imageDecoder.ts";
 
@@ -32,10 +31,10 @@ interface DotGGCard {
 }
 
 /**
- * Compute embedding for a card image with art region focus
+ * Compute embedding for a card image URL with art region focus
  */
-async function computeCardEmbedding(imageBytes: Uint8Array, cardId: string): Promise<number[] | null> {
-  const decoded = await decodeImageToPixels(imageBytes);
+async function computeCardEmbedding(imageUrl: string, cardId: string): Promise<number[] | null> {
+  const decoded = await fetchAndDecodeImage(imageUrl);
   if (!decoded) {
     console.warn(`[sync] Failed to decode image for ${cardId}`);
     return null;
@@ -118,6 +117,17 @@ serve(async (req) => {
     for (const card of cards) {
       try {
         const imageUrl = card.image || `https://static.dotgg.gg/riftbound/cards/${card.id}.webp`;
+        
+        // Compute art-focused embedding using REAL pixel decoder (handles WebP via proxy)
+        const embedding = await computeCardEmbedding(imageUrl, card.id);
+        
+        if (!embedding) {
+          console.warn(`[sync] Failed to compute embedding for ${card.id}`);
+          failed++;
+          continue;
+        }
+        
+        // Fetch original image for storage
         const imageResponse = await fetch(imageUrl);
         if (!imageResponse.ok) { 
           console.warn(`[sync] Failed to fetch image for ${card.id}: ${imageResponse.status}`);
@@ -135,15 +145,6 @@ serve(async (req) => {
         });
         
         const { data: publicUrlData } = supabase.storage.from('riftbound-cards').getPublicUrl(`${card.id}.webp`);
-        
-        // Compute art-focused embedding using REAL pixel decoder
-        const embedding = await computeCardEmbedding(imageBytes, card.id);
-        
-        if (!embedding) {
-          console.warn(`[sync] Failed to compute embedding for ${card.id}`);
-          failed++;
-          continue;
-        }
         
         // Log diagnostic cards
         if (DIAGNOSTIC_CARDS.includes(card.id)) {

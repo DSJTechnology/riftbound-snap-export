@@ -1,13 +1,11 @@
 /**
  * Shared image decoder for edge functions
- * Properly decodes PNG, JPEG, and WebP to RGBA pixels
+ * Properly decodes PNG and JPEG to RGBA pixels
+ * For WebP, we convert to PNG via external service or skip
  */
 
 import { decode as decodePng } from "https://deno.land/x/pngs@0.1.1/mod.ts";
 import { decode as decodeJpeg } from "https://esm.sh/jpeg-js@0.4.4";
-
-// Use ImageScript for WebP decoding - pure JS, works in Deno
-import { Image } from "https://deno.land/x/imagescript@1.3.0/mod.ts";
 
 /**
  * Detect image format from bytes
@@ -32,33 +30,65 @@ export function detectImageFormat(bytes: Uint8Array): 'png' | 'jpeg' | 'webp' | 
 }
 
 /**
- * Decode image bytes to RGBA pixels using ImageScript (handles all formats)
+ * Parse WebP dimensions from header for VP8/VP8L/VP8X formats
  */
-async function decodeWithImageScript(imageBytes: Uint8Array): Promise<{ width: number; height: number; pixels: Uint8Array } | null> {
-  try {
-    const image = await Image.decode(imageBytes);
-    const width = image.width;
-    const height = image.height;
-    
-    // ImageScript stores pixels as RGBA in a flat Uint8Array
-    const pixels = new Uint8Array(width * height * 4);
-    
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const color = image.getPixelAt(x + 1, y + 1); // ImageScript uses 1-indexed
-        const idx = (y * width + x) * 4;
-        // color is a 32-bit RGBA value
-        pixels[idx] = (color >> 24) & 0xFF;     // R
-        pixels[idx + 1] = (color >> 16) & 0xFF; // G
-        pixels[idx + 2] = (color >> 8) & 0xFF;  // B
-        pixels[idx + 3] = color & 0xFF;         // A
+function parseWebpDimensions(bytes: Uint8Array): { width: number; height: number } | null {
+  if (bytes.length < 30) return null;
+  
+  // Check for VP8 chunk (lossy)
+  if (bytes[12] === 0x56 && bytes[13] === 0x50 && bytes[14] === 0x38 && bytes[15] === 0x20) {
+    if (bytes.length >= 30) {
+      const width = (bytes[26] | (bytes[27] << 8)) & 0x3FFF;
+      const height = (bytes[28] | (bytes[29] << 8)) & 0x3FFF;
+      return { width, height };
+    }
+  }
+  
+  // Check for VP8L chunk (lossless)  
+  if (bytes[12] === 0x56 && bytes[13] === 0x50 && bytes[14] === 0x38 && bytes[15] === 0x4C) {
+    if (bytes.length >= 25) {
+      const signature = bytes[21];
+      if (signature === 0x2F) {
+        const bits = bytes[22] | (bytes[23] << 8) | (bytes[24] << 16) | (bytes[25] << 24);
+        const width = (bits & 0x3FFF) + 1;
+        const height = ((bits >> 14) & 0x3FFF) + 1;
+        return { width, height };
       }
     }
+  }
+  
+  // Check for VP8X extended format  
+  if (bytes[12] === 0x56 && bytes[13] === 0x50 && bytes[14] === 0x38 && bytes[15] === 0x58) {
+    if (bytes.length >= 30) {
+      const width = ((bytes[24] | (bytes[25] << 8) | (bytes[26] << 16)) & 0xFFFFFF) + 1;
+      const height = ((bytes[27] | (bytes[28] << 8) | (bytes[29] << 16)) & 0xFFFFFF) + 1;
+      return { width, height };
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Decode WebP by fetching as PNG from wsrv.nl image proxy
+ * This service converts WebP to PNG on the fly
+ */
+export async function fetchImageAsPng(imageUrl: string): Promise<Uint8Array | null> {
+  try {
+    // Use wsrv.nl (formerly images.weserv.nl) to convert WebP to PNG
+    const proxyUrl = `https://wsrv.nl/?url=${encodeURIComponent(imageUrl)}&output=png`;
+    console.log(`[imageDecoder] Fetching via proxy: ${proxyUrl}`);
     
-    console.log(`[imageDecoder] ImageScript decoded: ${width}x${height}`);
-    return { width, height, pixels };
+    const response = await fetch(proxyUrl);
+    if (!response.ok) {
+      console.error(`[imageDecoder] Proxy fetch failed: ${response.status}`);
+      return null;
+    }
+    
+    const buffer = await response.arrayBuffer();
+    return new Uint8Array(buffer);
   } catch (e) {
-    console.error('[imageDecoder] ImageScript decode error:', e);
+    console.error(`[imageDecoder] Proxy fetch error:`, e);
     return null;
   }
 }
@@ -74,7 +104,7 @@ export async function decodeImageToPixels(
   console.log(`[imageDecoder] Detected format: ${format}, bytes: ${imageBytes.length}`);
   
   try {
-    // For PNG, try the fast pngs decoder first
+    // PNG - use pngs
     if (format === 'png') {
       try {
         const decoded = decodePng(imageBytes);
@@ -85,11 +115,11 @@ export async function decodeImageToPixels(
           pixels: new Uint8Array(decoded.image),
         };
       } catch (e) {
-        console.log('[imageDecoder] pngs failed, trying ImageScript:', e);
+        console.error('[imageDecoder] PNG decode error:', e);
       }
     }
     
-    // For JPEG, try jpeg-js first
+    // JPEG - use jpeg-js
     if (format === 'jpeg') {
       try {
         const decoded = decodeJpeg(imageBytes, { useTArray: true, formatAsRGBA: true });
@@ -100,23 +130,58 @@ export async function decodeImageToPixels(
           pixels: new Uint8Array(decoded.data),
         };
       } catch (e) {
-        console.log('[imageDecoder] jpeg-js failed, trying ImageScript:', e);
+        console.error('[imageDecoder] JPEG decode error:', e);
       }
     }
     
-    // For WebP or any fallback, use ImageScript which handles all formats
-    const result = await decodeWithImageScript(imageBytes);
-    if (result) {
-      return result;
+    // WebP - log dimensions but can't decode natively
+    if (format === 'webp') {
+      const dims = parseWebpDimensions(imageBytes);
+      console.log(`[imageDecoder] WebP detected, dimensions: ${dims?.width}x${dims?.height} - use fetchAndDecodeImage() instead`);
     }
     
-    console.error(`[imageDecoder] All decoders failed for format: ${format}`);
+    console.error(`[imageDecoder] Cannot decode format: ${format}`);
     return null;
     
   } catch (err) {
     console.error(`[imageDecoder] Decode error:`, err);
     return null;
   }
+}
+
+/**
+ * Fetch image from URL and decode to pixels
+ * For WebP, uses proxy to convert to PNG first
+ */
+export async function fetchAndDecodeImage(
+  imageUrl: string
+): Promise<{ width: number; height: number; pixels: Uint8Array } | null> {
+  console.log(`[imageDecoder] Fetching image: ${imageUrl}`);
+  
+  // First try direct fetch
+  const response = await fetch(imageUrl);
+  if (!response.ok) {
+    console.error(`[imageDecoder] Fetch failed: ${response.status}`);
+    return null;
+  }
+  
+  const buffer = await response.arrayBuffer();
+  const imageBytes = new Uint8Array(buffer);
+  const format = detectImageFormat(imageBytes);
+  
+  // If it's WebP, use proxy to convert to PNG
+  if (format === 'webp') {
+    console.log(`[imageDecoder] WebP detected, converting via proxy...`);
+    const pngBytes = await fetchImageAsPng(imageUrl);
+    if (pngBytes) {
+      return decodeImageToPixels(pngBytes);
+    }
+    console.error(`[imageDecoder] WebP proxy conversion failed`);
+    return null;
+  }
+  
+  // Otherwise decode directly
+  return decodeImageToPixels(imageBytes);
 }
 
 // ============= SHARED PREPROCESSING =============
