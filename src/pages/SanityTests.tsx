@@ -424,22 +424,63 @@ const SanityTests = () => {
             )}
             
             {preprocessData && (
-              <div className="grid grid-cols-2 gap-4 text-xs">
-                <div>
-                  <p className="text-muted-foreground">Output Size</p>
-                  <p>{preprocessData.width}×{preprocessData.height}</p>
+              <div className="space-y-4">
+                {/* Image Comparison */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <p className="text-xs text-muted-foreground font-medium">Original</p>
+                    {preprocessData.original_image_url ? (
+                      <img 
+                        src={preprocessData.original_image_url} 
+                        alt="Original" 
+                        className="w-full aspect-square object-cover rounded-lg border border-border"
+                      />
+                    ) : selectedImageA ? (
+                      <img 
+                        src={selectedImageA.image_url} 
+                        alt="Original" 
+                        className="w-full aspect-square object-cover rounded-lg border border-border"
+                      />
+                    ) : (
+                      <div className="w-full aspect-square bg-muted rounded-lg flex items-center justify-center text-muted-foreground text-xs">
+                        No image
+                      </div>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <p className="text-xs text-muted-foreground font-medium">Preprocessed ({preprocessData.width}×{preprocessData.height})</p>
+                    {preprocessData.preprocessed_preview ? (
+                      <img 
+                        src={preprocessData.preprocessed_preview} 
+                        alt="Preprocessed" 
+                        className="w-full aspect-square object-contain rounded-lg border border-border bg-black"
+                      />
+                    ) : (
+                      <div className="w-full aspect-square bg-muted rounded-lg flex items-center justify-center text-muted-foreground text-xs">
+                        No preview
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div>
-                  <p className="text-muted-foreground">Mean Brightness</p>
-                  <p>{(preprocessData.stats.mean_pixel_value * 100).toFixed(1)}%</p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">Contrast (Std)</p>
-                  <p>{preprocessData.stats.std_pixel_value.toFixed(3)}</p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">Card Region</p>
-                  <p>{preprocessData.stats.has_detected_card_region ? 'Detected' : 'Not detected'}</p>
+                
+                {/* Stats */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs p-3 rounded-lg bg-muted/30">
+                  <div>
+                    <p className="text-muted-foreground">Output Size</p>
+                    <p className="font-medium">{preprocessData.width}×{preprocessData.height}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Mean Brightness</p>
+                    <p className="font-medium">{(preprocessData.stats.mean_pixel_value * 100).toFixed(1)}%</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Contrast (Std)</p>
+                    <p className="font-medium">{preprocessData.stats.std_pixel_value.toFixed(3)}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Card Region</p>
+                    <p className="font-medium">{preprocessData.stats.has_detected_card_region ? 'Detected' : 'Not detected'}</p>
+                  </div>
                 </div>
               </div>
             )}

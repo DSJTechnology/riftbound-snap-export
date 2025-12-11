@@ -151,33 +151,62 @@ function resizeImage(pixels: Uint8Array, srcWidth: number, srcHeight: number): U
 }
 
 /**
- * Convert pixels to base64 PNG (simple BMP-like format for preview)
+ * Convert pixels to base64 BMP format (browser-displayable)
  */
-function pixelsToBase64Preview(pixels: Uint8Array, width: number, height: number): string {
-  // Create a simple PPM format and encode to base64
-  const header = `P6\n${width} ${height}\n255\n`;
-  const headerBytes = new TextEncoder().encode(header);
-  const rgbData = new Uint8Array(width * height * 3);
-  
-  for (let i = 0, j = 0; i < pixels.length; i += 4, j += 3) {
-    rgbData[j] = pixels[i];
-    rgbData[j + 1] = pixels[i + 1];
-    rgbData[j + 2] = pixels[i + 2];
+function pixelsToBMP(pixels: Uint8Array, width: number, height: number): string {
+  // BMP file header (14 bytes)
+  const fileSize = 54 + width * height * 3 + (width * 3 % 4) * height;
+  const bmpFileHeader = new Uint8Array([
+    0x42, 0x4D,                           // "BM"
+    fileSize & 0xFF, (fileSize >> 8) & 0xFF, (fileSize >> 16) & 0xFF, (fileSize >> 24) & 0xFF,
+    0, 0, 0, 0,                           // Reserved
+    54, 0, 0, 0                           // Offset to pixel data
+  ]);
+
+  // DIB header (40 bytes)
+  const dibHeader = new Uint8Array([
+    40, 0, 0, 0,                          // DIB header size
+    width & 0xFF, (width >> 8) & 0xFF, (width >> 16) & 0xFF, (width >> 24) & 0xFF,
+    height & 0xFF, (height >> 8) & 0xFF, (height >> 16) & 0xFF, (height >> 24) & 0xFF,
+    1, 0,                                 // Planes
+    24, 0,                                // Bits per pixel
+    0, 0, 0, 0,                           // No compression
+    0, 0, 0, 0,                           // Image size (can be 0 for uncompressed)
+    0, 0, 0, 0,                           // X pixels per meter
+    0, 0, 0, 0,                           // Y pixels per meter
+    0, 0, 0, 0,                           // Colors in color table
+    0, 0, 0, 0                            // Important colors
+  ]);
+
+  // Calculate row padding (rows must be multiple of 4 bytes)
+  const rowPadding = (4 - (width * 3) % 4) % 4;
+  const pixelDataSize = (width * 3 + rowPadding) * height;
+  const pixelData = new Uint8Array(pixelDataSize);
+
+  // BMP stores rows bottom-to-top, BGR format
+  for (let y = 0; y < height; y++) {
+    const srcY = height - 1 - y; // Flip vertically
+    for (let x = 0; x < width; x++) {
+      const srcIdx = (srcY * width + x) * 4;
+      const dstIdx = y * (width * 3 + rowPadding) + x * 3;
+      pixelData[dstIdx] = pixels[srcIdx + 2];     // B
+      pixelData[dstIdx + 1] = pixels[srcIdx + 1]; // G
+      pixelData[dstIdx + 2] = pixels[srcIdx];     // R
+    }
   }
-  
-  const combined = new Uint8Array(headerBytes.length + rgbData.length);
-  combined.set(headerBytes);
-  combined.set(rgbData, headerBytes.length);
-  
-  // For browser compatibility, we'll return raw pixel data info instead
-  // Convert to a simple visual representation
-  const canvas = new Uint8Array(width * height * 4);
-  for (let i = 0; i < pixels.length; i++) {
-    canvas[i] = pixels[i];
+
+  // Combine all parts
+  const bmp = new Uint8Array(54 + pixelDataSize);
+  bmp.set(bmpFileHeader);
+  bmp.set(dibHeader, 14);
+  bmp.set(pixelData, 54);
+
+  // Convert to base64
+  let binary = '';
+  for (let i = 0; i < bmp.length; i++) {
+    binary += String.fromCharCode(bmp[i]);
   }
-  
-  // Return base64 of raw RGBA for now (client can render)
-  return btoa(String.fromCharCode(...canvas.slice(0, Math.min(canvas.length, 50000))));
+  return btoa(binary);
 }
 
 /**
@@ -272,13 +301,13 @@ serve(async (req) => {
     // Compute stats
     const stats = computeStats(resized);
     
-    // Create preview (simplified - return stats and dimensions)
-    const previewData = pixelsToBase64Preview(resized, OUTPUT_SIZE, OUTPUT_SIZE);
+    // Create preview as BMP image
+    const previewBmp = pixelsToBMP(resized, OUTPUT_SIZE, OUTPUT_SIZE);
     
     return new Response(JSON.stringify({
       card_id: cardId,
       original_image_url: originalImageUrl,
-      preprocessed_preview: `data:application/octet-stream;base64,${previewData}`,
+      preprocessed_preview: `data:image/bmp;base64,${previewBmp}`,
       width: OUTPUT_SIZE,
       height: OUTPUT_SIZE,
       stats: {
