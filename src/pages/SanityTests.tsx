@@ -13,6 +13,7 @@ import {
   encodeImage,
   compareImages,
   getCardTrainingImages,
+  getCardArtImages,
   evaluatePreprocessTest,
   evaluateSameImageTest,
   evaluateSameCardTest,
@@ -22,6 +23,7 @@ import {
   TrainingImageInfo,
   TestResult,
   TestStatus,
+  ImageSource,
 } from '@/services/debugService';
 
 const StatusBadge = ({ status }: { status: TestStatus }) => {
@@ -54,6 +56,11 @@ const SanityTests = () => {
   const [showSuggestionsA, setShowSuggestionsA] = useState(false);
   const [showSuggestionsB, setShowSuggestionsB] = useState(false);
   
+  // Image source type
+  type ImageSourceType = 'training' | 'card_art';
+  const [imageSourceA, setImageSourceA] = useState<ImageSourceType>('card_art');
+  const [imageSourceB, setImageSourceB] = useState<ImageSourceType>('card_art');
+  
   // Training images
   const [imagesA, setImagesA] = useState<TrainingImageInfo[]>([]);
   const [imagesB, setImagesB] = useState<TrainingImageInfo[]>([]);
@@ -61,6 +68,10 @@ const SanityTests = () => {
   const [selectedImageB, setSelectedImageB] = useState<TrainingImageInfo | null>(null);
   const [loadingImagesA, setLoadingImagesA] = useState(false);
   const [loadingImagesB, setLoadingImagesB] = useState(false);
+  
+  // Card art URLs (for card_art source)
+  const [cardArtUrlA, setCardArtUrlA] = useState<string | null>(null);
+  const [cardArtUrlB, setCardArtUrlB] = useState<string | null>(null);
   
   // Test results
   const [preprocessResult, setPreprocessResult] = useState<TestResult | null>(null);
@@ -94,38 +105,66 @@ const SanityTests = () => {
       ).slice(0, 10)
     : [];
   
-  // Load images when card selected
+  // Load images when card or source changes
   useEffect(() => {
     if (selectedCardA) {
       setLoadingImagesA(true);
-      getCardTrainingImages(selectedCardA.cardId, 10).then(({ data }) => {
-        setImagesA(data?.images || []);
-        setLoadingImagesA(false);
-        if (data?.images?.length) {
-          setSelectedImageA(data.images[0]);
-        }
-      });
+      if (imageSourceA === 'training') {
+        getCardTrainingImages(selectedCardA.cardId, 10).then(({ data }) => {
+          setImagesA(data?.images || []);
+          setLoadingImagesA(false);
+          if (data?.images?.length) {
+            setSelectedImageA(data.images[0]);
+          } else {
+            setSelectedImageA(null);
+          }
+        });
+      } else {
+        // card_art source
+        getCardArtImages(selectedCardA.cardId).then(({ data }) => {
+          const artUrl = data?.art_url || `https://otyiezyaqexbgibxgqtl.supabase.co/storage/v1/object/public/riftbound-cards/${selectedCardA.cardId}.webp`;
+          setCardArtUrlA(artUrl);
+          setImagesA([]);
+          setSelectedImageA({ id: 'card_art', image_url: artUrl, source: 'card_art' });
+          setLoadingImagesA(false);
+        });
+      }
     } else {
       setImagesA([]);
       setSelectedImageA(null);
+      setCardArtUrlA(null);
     }
-  }, [selectedCardA]);
+  }, [selectedCardA, imageSourceA]);
   
   useEffect(() => {
     if (selectedCardB) {
       setLoadingImagesB(true);
-      getCardTrainingImages(selectedCardB.cardId, 10).then(({ data }) => {
-        setImagesB(data?.images || []);
-        setLoadingImagesB(false);
-        if (data?.images?.length) {
-          setSelectedImageB(data.images[0]);
-        }
-      });
+      if (imageSourceB === 'training') {
+        getCardTrainingImages(selectedCardB.cardId, 10).then(({ data }) => {
+          setImagesB(data?.images || []);
+          setLoadingImagesB(false);
+          if (data?.images?.length) {
+            setSelectedImageB(data.images[0]);
+          } else {
+            setSelectedImageB(null);
+          }
+        });
+      } else {
+        // card_art source
+        getCardArtImages(selectedCardB.cardId).then(({ data }) => {
+          const artUrl = data?.art_url || `https://otyiezyaqexbgibxgqtl.supabase.co/storage/v1/object/public/riftbound-cards/${selectedCardB.cardId}.webp`;
+          setCardArtUrlB(artUrl);
+          setImagesB([]);
+          setSelectedImageB({ id: 'card_art', image_url: artUrl, source: 'card_art' });
+          setLoadingImagesB(false);
+        });
+      }
     } else {
       setImagesB([]);
       setSelectedImageB(null);
+      setCardArtUrlB(null);
     }
-  }, [selectedCardB]);
+  }, [selectedCardB, imageSourceB]);
   
   const handleSelectCardA = (card: CardData) => {
     setSelectedCardA(card);
@@ -144,13 +183,23 @@ const SanityTests = () => {
     setDiffCardResult(null);
   };
   
+  // Helper to build ImageSource param
+  const buildImageSource = (source: ImageSourceType, image: TrainingImageInfo | null, card: CardData | null): ImageSource => {
+    if (source === 'card_art' && card) {
+      return { source: 'card_art', card_id: card.cardId };
+    }
+    return { training_image_id: image?.id };
+  };
+  
   // Test runners
   const runPreprocessTest = async () => {
-    if (!selectedImageA) return;
+    if (!selectedImageA && imageSourceA === 'training') return;
+    if (!selectedCardA && imageSourceA === 'card_art') return;
     setRunningPreprocess(true);
     setPreprocessResult({ status: 'pending', message: 'Running...' });
     
-    const { data, error } = await preprocessImage({ training_image_id: selectedImageA.id });
+    const imageSource = buildImageSource(imageSourceA, selectedImageA, selectedCardA);
+    const { data, error } = await preprocessImage(imageSource);
     
     if (error) {
       setPreprocessResult({ status: 'error', message: error });
@@ -163,14 +212,13 @@ const SanityTests = () => {
   };
   
   const runSameImageTest = async () => {
-    if (!selectedImageA) return;
+    if (!selectedImageA && imageSourceA === 'training') return;
+    if (!selectedCardA && imageSourceA === 'card_art') return;
     setRunningSameImage(true);
     setSameImageResult({ status: 'pending', message: 'Running...' });
     
-    const { data, error } = await compareImages(
-      { training_image_id: selectedImageA.id },
-      { training_image_id: selectedImageA.id }
-    );
+    const imageSource = buildImageSource(imageSourceA, selectedImageA, selectedCardA);
+    const { data, error } = await compareImages(imageSource, imageSource);
     
     if (error) {
       setSameImageResult({ status: 'error', message: error });
@@ -183,6 +231,11 @@ const SanityTests = () => {
   };
   
   const runSameCardTest = async () => {
+    // For card_art, we can't do same-card-different-image test (only 1 image)
+    if (imageSourceA === 'card_art') {
+      setSameCardResult({ status: 'error', message: 'Same card test requires training images (multiple photos)' });
+      return;
+    }
     if (!selectedImageA || imagesA.length < 2) return;
     setRunningSameCard(true);
     setSameCardResult({ status: 'pending', message: 'Running...' });
@@ -211,14 +264,16 @@ const SanityTests = () => {
   };
   
   const runDiffCardTest = async () => {
-    if (!selectedImageA || !selectedImageB) return;
+    const hasImageA = imageSourceA === 'card_art' ? !!selectedCardA : !!selectedImageA;
+    const hasImageB = imageSourceB === 'card_art' ? !!selectedCardB : !!selectedImageB;
+    if (!hasImageA || !hasImageB) return;
     setRunningDiffCard(true);
     setDiffCardResult({ status: 'pending', message: 'Running...' });
     
-    const { data, error } = await compareImages(
-      { training_image_id: selectedImageA.id },
-      { training_image_id: selectedImageB.id }
-    );
+    const imageSourceA_param = buildImageSource(imageSourceA, selectedImageA, selectedCardA);
+    const imageSourceB_param = buildImageSource(imageSourceB, selectedImageB, selectedCardB);
+    
+    const { data, error } = await compareImages(imageSourceA_param, imageSourceB_param);
     
     if (error) {
       setDiffCardResult({ status: 'error', message: error });
@@ -292,7 +347,7 @@ const SanityTests = () => {
           </div>
           <Button
             onClick={runAllTests}
-            disabled={!selectedImageA || runningAll}
+            disabled={(!selectedImageA && !selectedCardA) || runningAll}
             size="sm"
           >
             {runningAll ? (
@@ -354,32 +409,72 @@ const SanityTests = () => {
               </div>
             )}
             
-            {/* Training images for Card A */}
+            {/* Image Source Toggle */}
+            {selectedCardA && (
+              <div className="flex gap-2">
+                <Button
+                  variant={imageSourceA === 'card_art' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setImageSourceA('card_art')}
+                >
+                  DotGG Art
+                </Button>
+                <Button
+                  variant={imageSourceA === 'training' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setImageSourceA('training')}
+                >
+                  Training Images
+                </Button>
+              </div>
+            )}
+            
+            {/* Image selection for Card A */}
             {selectedCardA && (
               <div>
-                <p className="text-sm font-medium mb-2">Training Images ({imagesA.length})</p>
-                {loadingImagesA ? (
-                  <div className="flex items-center gap-2 text-muted-foreground">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Loading...
-                  </div>
-                ) : imagesA.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No training images. Go to Training tab to add some.</p>
+                {imageSourceA === 'card_art' ? (
+                  <>
+                    <p className="text-sm font-medium mb-2">Card Art (Official)</p>
+                    {loadingImagesA ? (
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Loading...
+                      </div>
+                    ) : selectedImageA ? (
+                      <div className="w-24 h-24 rounded overflow-hidden border-2 border-primary">
+                        <img src={selectedImageA.image_url} alt="" className="w-full h-full object-cover" />
+                      </div>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">No card art available</p>
+                    )}
+                  </>
                 ) : (
-                  <div className="flex gap-2 flex-wrap">
-                    {imagesA.map((img) => (
-                      <button
-                        key={img.id}
-                        onClick={() => setSelectedImageA(img)}
-                        className={cn(
-                          "w-16 h-16 rounded overflow-hidden border-2 transition-colors",
-                          selectedImageA?.id === img.id ? "border-primary" : "border-transparent hover:border-muted"
-                        )}
-                      >
-                        <img src={img.image_url} alt="" className="w-full h-full object-cover" />
-                      </button>
-                    ))}
-                  </div>
+                  <>
+                    <p className="text-sm font-medium mb-2">Training Images ({imagesA.length})</p>
+                    {loadingImagesA ? (
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Loading...
+                      </div>
+                    ) : imagesA.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No training images. Go to Training tab to add some.</p>
+                    ) : (
+                      <div className="flex gap-2 flex-wrap">
+                        {imagesA.map((img) => (
+                          <button
+                            key={img.id}
+                            onClick={() => setSelectedImageA(img)}
+                            className={cn(
+                              "w-16 h-16 rounded overflow-hidden border-2 transition-colors",
+                              selectedImageA?.id === img.id ? "border-primary" : "border-transparent hover:border-muted"
+                            )}
+                          >
+                            <img src={img.image_url} alt="" className="w-full h-full object-cover" />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -661,31 +756,72 @@ const SanityTests = () => {
               </div>
             )}
             
+            {/* Image Source Toggle */}
+            {selectedCardB && (
+              <div className="flex gap-2">
+                <Button
+                  variant={imageSourceB === 'card_art' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setImageSourceB('card_art')}
+                >
+                  DotGG Art
+                </Button>
+                <Button
+                  variant={imageSourceB === 'training' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setImageSourceB('training')}
+                >
+                  Training Images
+                </Button>
+              </div>
+            )}
+            
+            {/* Image selection for Card B */}
             {selectedCardB && (
               <div>
-                <p className="text-sm font-medium mb-2">Training Images ({imagesB.length})</p>
-                {loadingImagesB ? (
-                  <div className="flex items-center gap-2 text-muted-foreground">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Loading...
-                  </div>
-                ) : imagesB.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No training images for Card B.</p>
+                {imageSourceB === 'card_art' ? (
+                  <>
+                    <p className="text-sm font-medium mb-2">Card Art (Official)</p>
+                    {loadingImagesB ? (
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Loading...
+                      </div>
+                    ) : selectedImageB ? (
+                      <div className="w-24 h-24 rounded overflow-hidden border-2 border-primary">
+                        <img src={selectedImageB.image_url} alt="" className="w-full h-full object-cover" />
+                      </div>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">No card art available</p>
+                    )}
+                  </>
                 ) : (
-                  <div className="flex gap-2 flex-wrap">
-                    {imagesB.map((img) => (
-                      <button
-                        key={img.id}
-                        onClick={() => setSelectedImageB(img)}
-                        className={cn(
-                          "w-16 h-16 rounded overflow-hidden border-2 transition-colors",
-                          selectedImageB?.id === img.id ? "border-primary" : "border-transparent hover:border-muted"
-                        )}
-                      >
-                        <img src={img.image_url} alt="" className="w-full h-full object-cover" />
-                      </button>
-                    ))}
-                  </div>
+                  <>
+                    <p className="text-sm font-medium mb-2">Training Images ({imagesB.length})</p>
+                    {loadingImagesB ? (
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Loading...
+                      </div>
+                    ) : imagesB.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No training images for Card B.</p>
+                    ) : (
+                      <div className="flex gap-2 flex-wrap">
+                        {imagesB.map((img) => (
+                          <button
+                            key={img.id}
+                            onClick={() => setSelectedImageB(img)}
+                            className={cn(
+                              "w-16 h-16 rounded overflow-hidden border-2 transition-colors",
+                              selectedImageB?.id === img.id ? "border-primary" : "border-transparent hover:border-muted"
+                            )}
+                          >
+                            <img src={img.image_url} alt="" className="w-full h-full object-cover" />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}
