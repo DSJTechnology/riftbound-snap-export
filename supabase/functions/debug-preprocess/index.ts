@@ -3,6 +3,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.2";
 
 import {
   decodeImageToPixels,
+  fetchAndDecodeImage,
   cropToArtRegion,
   resizeImage,
   pixelsToBMP,
@@ -28,11 +29,11 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     );
     
-    let imageBytes: Uint8Array;
+    let decoded: { width: number; height: number; pixels: Uint8Array } | null = null;
     let resolvedCardId: string | null = null;
     let originalImageUrl: string | null = null;
     
-    // Handle card_art source
+    // Handle card_art source - use fetchAndDecodeImage which handles WebP via proxy
     if (source === 'card_art' && card_id) {
       resolvedCardId = card_id;
       
@@ -49,12 +50,11 @@ serve(async (req) => {
       
       originalImageUrl = card.art_url;
       
-      // Fetch the card art image
-      const response = await fetch(card.art_url);
-      if (!response.ok) throw new Error(`Failed to fetch card art: ${response.status}`);
-      
-      const buffer = await response.arrayBuffer();
-      imageBytes = new Uint8Array(buffer);
+      // Use fetchAndDecodeImage which handles WebP conversion
+      decoded = await fetchAndDecodeImage(card.art_url);
+      if (!decoded) {
+        throw new Error('Failed to decode card art image');
+      }
       
     } else if (training_image_id) {
       // Load from training images table
@@ -71,32 +71,27 @@ serve(async (req) => {
       resolvedCardId = trainingImage.card_id;
       originalImageUrl = trainingImage.image_url;
       
-      // Fetch the image
-      const response = await fetch(trainingImage.image_url);
-      if (!response.ok) throw new Error('Failed to fetch training image');
-      
-      const buffer = await response.arrayBuffer();
-      imageBytes = new Uint8Array(buffer);
+      // Use fetchAndDecodeImage which handles WebP conversion
+      decoded = await fetchAndDecodeImage(trainingImage.image_url);
+      if (!decoded) {
+        throw new Error('Failed to decode training image');
+      }
       
     } else if (image_data) {
       // Parse base64 data URL
       const base64Match = image_data.match(/^data:image\/\w+;base64,(.+)$/);
       if (base64Match) {
         const base64 = base64Match[1];
-        imageBytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+        const imageBytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+        decoded = await decodeImageToPixels(imageBytes);
+        if (!decoded) {
+          throw new Error('Failed to decode base64 image');
+        }
       } else {
         throw new Error('Invalid image_data format');
       }
     } else {
       throw new Error('Either image_data, training_image_id, or (source=card_art + card_id) required');
-    }
-    
-    console.log(`[debug-preprocess] Processing image, bytes: ${imageBytes.length}`);
-    
-    // Decode image to proper RGBA pixels
-    const decoded = await decodeImageToPixels(imageBytes);
-    if (!decoded) {
-      throw new Error('Failed to decode image - unsupported format or corrupted');
     }
     
     console.log(`[debug-preprocess] Decoded: ${decoded.width}x${decoded.height}`);

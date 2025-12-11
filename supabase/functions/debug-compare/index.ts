@@ -3,6 +3,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.2";
 
 import {
   computeEmbedding,
+  computeEmbeddingFromUrl,
   computeNorm,
   countTrailingZeros,
   cosineSimilarity,
@@ -22,8 +23,8 @@ interface ImageInput {
   image_data?: string;
 }
 
-async function loadImageBytes(supabase: any, input: ImageInput): Promise<Uint8Array> {
-  // Handle card_art source
+async function computeEmbeddingForInput(supabase: any, input: ImageInput): Promise<number[] | null> {
+  // Handle card_art source - use URL-based embedding (handles WebP)
   if (input.source === 'card_art' && input.card_id) {
     const { data: card, error: cardError } = await supabase
       .from('riftbound_cards')
@@ -35,15 +36,11 @@ async function loadImageBytes(supabase: any, input: ImageInput): Promise<Uint8Ar
       throw new Error(`Card not found: ${input.card_id}`);
     }
     
-    const response = await fetch(card.art_url);
-    if (!response.ok) throw new Error(`Failed to fetch card art: ${response.status}`);
-    
-    const buffer = await response.arrayBuffer();
-    console.log(`[debug-compare] Loaded card art for ${input.card_id}`);
-    return new Uint8Array(buffer);
+    console.log(`[debug-compare] Loading card art for ${input.card_id}`);
+    return computeEmbeddingFromUrl(card.art_url);
   }
   
-  // Handle training image
+  // Handle training image - use URL-based embedding
   if (input.training_image_id) {
     const { data: trainingImage, error } = await supabase
       .from('training_images')
@@ -55,20 +52,17 @@ async function loadImageBytes(supabase: any, input: ImageInput): Promise<Uint8Ar
       throw new Error(`Training image not found: ${input.training_image_id}`);
     }
     
-    const response = await fetch(trainingImage.image_url);
-    if (!response.ok) throw new Error('Failed to fetch training image');
-    
-    const buffer = await response.arrayBuffer();
-    console.log(`[debug-compare] Loaded training image ${input.training_image_id}`);
-    return new Uint8Array(buffer);
+    console.log(`[debug-compare] Loading training image ${input.training_image_id}`);
+    return computeEmbeddingFromUrl(trainingImage.image_url);
   }
   
   // Handle base64 image data
   if (input.image_data) {
     const base64Match = input.image_data.match(/^data:image\/\w+;base64,(.+)$/);
     if (base64Match) {
-      console.log(`[debug-compare] Loaded base64 image`);
-      return Uint8Array.from(atob(base64Match[1]), c => c.charCodeAt(0));
+      console.log(`[debug-compare] Loading base64 image`);
+      const imageBytes = Uint8Array.from(atob(base64Match[1]), c => c.charCodeAt(0));
+      return computeEmbedding(imageBytes);
     }
     throw new Error('Invalid image_data format');
   }
@@ -93,18 +87,11 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     );
     
-    console.log(`[debug-compare] Loading images...`);
-    
-    const [bytes1, bytes2] = await Promise.all([
-      loadImageBytes(supabase, image1),
-      loadImageBytes(supabase, image2),
-    ]);
-    
-    console.log(`[debug-compare] Encoding images...`);
+    console.log(`[debug-compare] Computing embeddings...`);
     
     const [embedding1, embedding2] = await Promise.all([
-      computeEmbedding(bytes1),
-      computeEmbedding(bytes2),
+      computeEmbeddingForInput(supabase, image1),
+      computeEmbeddingForInput(supabase, image2),
     ]);
     
     if (!embedding1 || !embedding2) {

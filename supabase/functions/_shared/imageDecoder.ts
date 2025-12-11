@@ -514,6 +514,24 @@ export async function computeEmbedding(imageBytes: Uint8Array): Promise<number[]
 }
 
 /**
+ * Full pipeline from URL: fetch → decode → crop → resize → extract → normalize
+ * Handles WebP via proxy conversion
+ */
+export async function computeEmbeddingFromUrl(imageUrl: string): Promise<number[] | null> {
+  const decoded = await fetchAndDecodeImage(imageUrl);
+  if (!decoded) {
+    console.warn('[imageDecoder] Failed to fetch/decode image from URL');
+    return null;
+  }
+  
+  const art = cropToArtRegion(decoded.pixels, decoded.width, decoded.height);
+  const resized = resizeImage(art.pixels, art.width, art.height);
+  const features = extractFeaturesFromPixels(resized, OUTPUT_SIZE, OUTPUT_SIZE);
+  
+  return l2Normalize(features);
+}
+
+/**
  * Convert RGBA pixels to base64 BMP (for previews)
  */
 export function pixelsToBMP(pixels: Uint8Array, width: number, height: number): string {

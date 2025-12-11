@@ -3,8 +3,10 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.2";
 
 import {
   computeEmbedding,
+  computeEmbeddingFromUrl,
   computeNorm,
   countTrailingZeros,
+  decodeImageToPixels,
   EMBEDDING_SIZE,
 } from "../_shared/imageDecoder.ts";
 
@@ -26,11 +28,10 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     );
     
-    let imageBytes: Uint8Array;
+    let embedding: number[] | null = null;
     
-    // Handle card_art source
+    // Handle card_art source - use URL-based embedding (handles WebP)
     if (source === 'card_art' && card_id) {
-      // Get card from database
       const { data: card, error: cardError } = await supabase
         .from('riftbound_cards')
         .select('art_url')
@@ -41,12 +42,8 @@ serve(async (req) => {
         throw new Error(`Card not found: ${card_id}`);
       }
       
-      const response = await fetch(card.art_url);
-      if (!response.ok) throw new Error(`Failed to fetch card art: ${response.status}`);
-      
-      const buffer = await response.arrayBuffer();
-      imageBytes = new Uint8Array(buffer);
-      console.log(`[debug-encode] Loaded card art for ${card_id}, bytes: ${imageBytes.length}`);
+      console.log(`[debug-encode] Loading card art for ${card_id} from ${card.art_url}`);
+      embedding = await computeEmbeddingFromUrl(card.art_url);
       
     } else if (training_image_id) {
       const { data: trainingImage, error } = await supabase
@@ -59,28 +56,22 @@ serve(async (req) => {
         throw new Error(`Training image not found: ${training_image_id}`);
       }
       
-      const response = await fetch(trainingImage.image_url);
-      if (!response.ok) throw new Error('Failed to fetch training image');
-      
-      const buffer = await response.arrayBuffer();
-      imageBytes = new Uint8Array(buffer);
-      console.log(`[debug-encode] Loaded training image ${training_image_id}, bytes: ${imageBytes.length}`);
+      console.log(`[debug-encode] Loading training image ${training_image_id}`);
+      embedding = await computeEmbeddingFromUrl(trainingImage.image_url);
       
     } else if (image_data) {
       const base64Match = image_data.match(/^data:image\/\w+;base64,(.+)$/);
       if (base64Match) {
-        imageBytes = Uint8Array.from(atob(base64Match[1]), c => c.charCodeAt(0));
+        const imageBytes = Uint8Array.from(atob(base64Match[1]), c => c.charCodeAt(0));
+        console.log(`[debug-encode] Loaded base64 image, bytes: ${imageBytes.length}`);
+        embedding = await computeEmbedding(imageBytes);
       } else {
         throw new Error('Invalid image_data format');
       }
-      console.log(`[debug-encode] Loaded base64 image, bytes: ${imageBytes.length}`);
       
     } else {
       throw new Error('Either image_data, training_image_id, or (source=card_art + card_id) required');
     }
-    
-    // Use shared embedding pipeline
-    const embedding = await computeEmbedding(imageBytes);
     
     if (!embedding) {
       throw new Error('Failed to compute embedding - image decode failed');
