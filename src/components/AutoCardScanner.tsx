@@ -116,7 +116,8 @@ export function AutoCardScanner({ onCardDetected, onScanFailed }: AutoCardScanne
         className={cn(
           "relative w-full overflow-hidden rounded-xl border-2",
           isStreaming ? "border-primary/50" : "border-dashed border-border",
-          "bg-black"
+          "bg-black",
+          "max-h-[60vh] md:max-h-[50vh]"
         )}
         style={{ aspectRatio: '3/4' }}
       >
