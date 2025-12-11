@@ -14,3 +14,15 @@ verify_jwt = false
 
 [functions.training-images]
 verify_jwt = false
+
+[functions.debug-preprocess]
+verify_jwt = false
+
+[functions.debug-encode]
+verify_jwt = false
+
+[functions.debug-compare]
+verify_jwt = false
+
+[functions.debug-training-images]
+verify_jwt = false
