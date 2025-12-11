@@ -6,8 +6,8 @@
 import { decode as decodePng } from "https://deno.land/x/pngs@0.1.1/mod.ts";
 import { decode as decodeJpeg } from "https://esm.sh/jpeg-js@0.4.4";
 
-// WebP decoder - using jSquash which works in Deno
-import { decode as decodeWebp } from "https://esm.sh/@jsquash/webp@1.4.0";
+// Use ImageScript for WebP decoding - pure JS, works in Deno
+import { Image } from "https://deno.land/x/imagescript@1.3.0/mod.ts";
 
 /**
  * Detect image format from bytes
@@ -32,6 +32,38 @@ export function detectImageFormat(bytes: Uint8Array): 'png' | 'jpeg' | 'webp' | 
 }
 
 /**
+ * Decode image bytes to RGBA pixels using ImageScript (handles all formats)
+ */
+async function decodeWithImageScript(imageBytes: Uint8Array): Promise<{ width: number; height: number; pixels: Uint8Array } | null> {
+  try {
+    const image = await Image.decode(imageBytes);
+    const width = image.width;
+    const height = image.height;
+    
+    // ImageScript stores pixels as RGBA in a flat Uint8Array
+    const pixels = new Uint8Array(width * height * 4);
+    
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const color = image.getPixelAt(x + 1, y + 1); // ImageScript uses 1-indexed
+        const idx = (y * width + x) * 4;
+        // color is a 32-bit RGBA value
+        pixels[idx] = (color >> 24) & 0xFF;     // R
+        pixels[idx + 1] = (color >> 16) & 0xFF; // G
+        pixels[idx + 2] = (color >> 8) & 0xFF;  // B
+        pixels[idx + 3] = color & 0xFF;         // A
+      }
+    }
+    
+    console.log(`[imageDecoder] ImageScript decoded: ${width}x${height}`);
+    return { width, height, pixels };
+  } catch (e) {
+    console.error('[imageDecoder] ImageScript decode error:', e);
+    return null;
+  }
+}
+
+/**
  * Decode image bytes to RGBA pixels
  * Returns null if decoding fails
  */
@@ -42,90 +74,43 @@ export async function decodeImageToPixels(
   console.log(`[imageDecoder] Detected format: ${format}, bytes: ${imageBytes.length}`);
   
   try {
+    // For PNG, try the fast pngs decoder first
     if (format === 'png') {
-      const decoded = decodePng(imageBytes);
-      console.log(`[imageDecoder] PNG decoded: ${decoded.width}x${decoded.height}`);
-      return {
-        width: decoded.width,
-        height: decoded.height,
-        pixels: new Uint8Array(decoded.image),
-      };
-    }
-    
-    if (format === 'jpeg') {
-      const decoded = decodeJpeg(imageBytes, { useTArray: true, formatAsRGBA: true });
-      console.log(`[imageDecoder] JPEG decoded: ${decoded.width}x${decoded.height}`);
-      return {
-        width: decoded.width,
-        height: decoded.height,
-        pixels: new Uint8Array(decoded.data),
-      };
-    }
-    
-    if (format === 'webp') {
       try {
-        // decodeWebp returns ImageData { width, height, data: Uint8ClampedArray }
-        // Need to copy to ArrayBuffer to satisfy type requirements
-        const buffer = new ArrayBuffer(imageBytes.length);
-        new Uint8Array(buffer).set(imageBytes);
-        const decoded = await decodeWebp(buffer);
-        console.log(`[imageDecoder] WebP decoded: ${decoded.width}x${decoded.height}`);
+        const decoded = decodePng(imageBytes);
+        console.log(`[imageDecoder] PNG decoded: ${decoded.width}x${decoded.height}`);
+        return {
+          width: decoded.width,
+          height: decoded.height,
+          pixels: new Uint8Array(decoded.image),
+        };
+      } catch (e) {
+        console.log('[imageDecoder] pngs failed, trying ImageScript:', e);
+      }
+    }
+    
+    // For JPEG, try jpeg-js first
+    if (format === 'jpeg') {
+      try {
+        const decoded = decodeJpeg(imageBytes, { useTArray: true, formatAsRGBA: true });
+        console.log(`[imageDecoder] JPEG decoded: ${decoded.width}x${decoded.height}`);
         return {
           width: decoded.width,
           height: decoded.height,
           pixels: new Uint8Array(decoded.data),
         };
       } catch (e) {
-        console.error('[imageDecoder] WebP decode error:', e);
-        // Fall through to fallbacks
+        console.log('[imageDecoder] jpeg-js failed, trying ImageScript:', e);
       }
     }
     
-    // Unknown format - try each decoder as fallback
-    console.log(`[imageDecoder] Unknown format or failed, trying fallbacks...`);
+    // For WebP or any fallback, use ImageScript which handles all formats
+    const result = await decodeWithImageScript(imageBytes);
+    if (result) {
+      return result;
+    }
     
-    // Try PNG
-    try {
-      const decoded = decodePng(imageBytes);
-      if (decoded && decoded.width > 0 && decoded.height > 0) {
-        console.log(`[imageDecoder] Fallback PNG worked: ${decoded.width}x${decoded.height}`);
-        return {
-          width: decoded.width,
-          height: decoded.height,
-          pixels: new Uint8Array(decoded.image),
-        };
-      }
-    } catch { /* continue */ }
-    
-    // Try JPEG
-    try {
-      const decoded = decodeJpeg(imageBytes, { useTArray: true, formatAsRGBA: true });
-      if (decoded && decoded.width > 0 && decoded.height > 0) {
-        console.log(`[imageDecoder] Fallback JPEG worked: ${decoded.width}x${decoded.height}`);
-        return {
-          width: decoded.width,
-          height: decoded.height,
-          pixels: new Uint8Array(decoded.data),
-        };
-      }
-    } catch { /* continue */ }
-    
-    // Try WebP
-    try {
-      const buffer = new ArrayBuffer(imageBytes.length);
-      new Uint8Array(buffer).set(imageBytes);
-      const decoded = await decodeWebp(buffer);
-      if (decoded && decoded.width > 0 && decoded.height > 0) {
-        console.log(`[imageDecoder] Fallback WebP worked: ${decoded.width}x${decoded.height}`);
-        return {
-          width: decoded.width,
-          height: decoded.height,
-          pixels: new Uint8Array(decoded.data),
-        };
-      }
-    } catch { /* continue */ }
-    
-    console.error(`[imageDecoder] All decoders failed`);
+    console.error(`[imageDecoder] All decoders failed for format: ${format}`);
     return null;
     
   } catch (err) {
