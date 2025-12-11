@@ -26,3 +26,6 @@ verify_jwt = false
 
 [functions.debug-training-images]
 verify_jwt = false
+
+[functions.debug-card-art]
+verify_jwt = false

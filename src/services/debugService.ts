@@ -49,12 +49,28 @@ export interface TrainingImageInfo {
   id: string;
   image_url: string;
   source: string;
-  created_at: string;
+  created_at?: string;
+  card_name?: string;
 }
 
 export interface CardTrainingImages {
   card_id: string;
   images: TrainingImageInfo[];
+}
+
+export interface CardArtImages {
+  card_id: string;
+  art_url: string;
+  has_embedding: boolean;
+  images: TrainingImageInfo[];
+}
+
+// Input types for debug functions
+export interface ImageSource {
+  source?: 'training' | 'card_art';
+  training_image_id?: string;
+  card_id?: string;
+  image_data?: string;
 }
 
 // Sanity test thresholds
@@ -82,10 +98,10 @@ export interface TestResult {
 }
 
 /**
- * Run preprocessing on an image
+ * Run preprocessing on an image (training or card art)
  */
 export async function preprocessImage(
-  input: { image_data?: string; training_image_id?: string }
+  input: ImageSource
 ): Promise<{ data: PreprocessResult | null; error: string | null }> {
   try {
     const { data, error } = await supabase.functions.invoke('debug-preprocess', {
@@ -107,10 +123,10 @@ export async function preprocessImage(
 }
 
 /**
- * Encode an image to embedding
+ * Encode an image to embedding (training or card art)
  */
 export async function encodeImage(
-  input: { image_data?: string; training_image_id?: string }
+  input: ImageSource
 ): Promise<{ data: EncodeResult | null; error: string | null }> {
   try {
     const { data, error } = await supabase.functions.invoke('debug-encode', {
@@ -132,11 +148,11 @@ export async function encodeImage(
 }
 
 /**
- * Compare two images via embeddings
+ * Compare two images via embeddings (supports both training and card art)
  */
 export async function compareImages(
-  image1: { training_image_id?: string; image_data?: string },
-  image2: { training_image_id?: string; image_data?: string }
+  image1: ImageSource,
+  image2: ImageSource
 ): Promise<{ data: CompareResult | null; error: string | null }> {
   try {
     const { data, error } = await supabase.functions.invoke('debug-compare', {
@@ -165,13 +181,40 @@ export async function getCardTrainingImages(
   limit = 10
 ): Promise<{ data: CardTrainingImages | null; error: string | null }> {
   try {
-    const { data, error } = await supabase.functions.invoke('debug-training-images', {
-      body: null,
-      method: 'GET',
+    const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/debug-training-images?card_id=${encodeURIComponent(cardId)}&limit=${limit}`;
+    
+    const response = await fetch(url, {
+      headers: {
+        'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+        'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+      },
     });
     
-    // Use direct fetch since invoke doesn't support query params well for GET
-    const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/debug-training-images?card_id=${encodeURIComponent(cardId)}&limit=${limit}`;
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      return { data: null, error: errorData.error || `HTTP ${response.status}` };
+    }
+    
+    const result = await response.json();
+    
+    if (result.error) {
+      return { data: null, error: result.error };
+    }
+    
+    return { data: result, error: null };
+  } catch (err) {
+    return { data: null, error: err instanceof Error ? err.message : 'Unknown error' };
+  }
+}
+
+/**
+ * Get card art images for a card
+ */
+export async function getCardArtImages(
+  cardId: string
+): Promise<{ data: CardArtImages | null; error: string | null }> {
+  try {
+    const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/debug-card-art?card_id=${encodeURIComponent(cardId)}`;
     
     const response = await fetch(url, {
       headers: {
