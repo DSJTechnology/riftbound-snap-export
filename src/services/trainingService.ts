@@ -63,16 +63,14 @@ export async function searchWebImages(
   cardName?: string
 ): Promise<{ results: WebImageResult[]; cardName?: string; error?: string }> {
   try {
+    if (!cardId && !cardName) {
+      return { results: [], error: 'Please provide a card_id or card_name' };
+    }
+
     const params = new URLSearchParams();
     if (cardId) params.set('card_id', cardId);
     if (cardName) params.set('card_name', cardName);
 
-    const { data, error } = await supabase.functions.invoke('training-search-images', {
-      body: null,
-      method: 'GET',
-    });
-
-    // For GET requests with params, we need to use a different approach
     const response = await fetch(
       `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/training-search-images?${params.toString()}`,
       {
@@ -85,6 +83,13 @@ export async function searchWebImages(
     const responseData = await response.json();
 
     if (responseData.error) {
+      // Check for Google API specific errors
+      if (responseData.details?.error?.status === 'PERMISSION_DENIED') {
+        return { 
+          results: [], 
+          error: 'Google Custom Search API is not enabled. Please enable it in Google Cloud Console and wait a few minutes.' 
+        };
+      }
       return { results: [], error: responseData.error };
     }
 
