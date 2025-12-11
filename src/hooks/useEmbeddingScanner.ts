@@ -4,10 +4,15 @@ import { useCardEmbeddings, EmbeddedCard } from '@/contexts/CardEmbeddingContext
 import { 
   loadOpenCV, 
   isOpenCVReady, 
-  normalizeCardFromVideoFrame, 
-  extractArtRegion 
+  normalizeCardFromVideoFrame,
+  // Note: extractArtRegion removed - we now use full card
 } from '@/utils/cardNormalization';
-import { extractEmbeddingFromArtCanvas } from '@/utils/artEmbedding';
+import { 
+  loadEmbeddingModel,
+  computeEmbeddingFromCanvas,
+  cosineSimilarity,
+  l2Normalize,
+} from '@/embedding/cnnEmbedding';
 import { 
   multiSignalMatch, 
   quickVisualMatch,
@@ -115,8 +120,9 @@ export function useEmbeddingScanner({
   const [recentScans, setRecentScans] = useState<RecentScan[]>([]);
   const [qualityIssues, setQualityIssues] = useState<string[]>([]);
   const [opencvReady, setOpencvReady] = useState(false);
+  const [modelReady, setModelReady] = useState(false);
 
-  // Load OpenCV on mount
+  // Load OpenCV and CNN model on mount
   useEffect(() => {
     loadOpenCV()
       .then(() => {
@@ -125,6 +131,16 @@ export function useEmbeddingScanner({
       })
       .catch((err) => {
         console.warn('[EmbeddingScanner] OpenCV load failed, will use fallback:', err);
+      });
+    
+    loadEmbeddingModel()
+      .then(() => {
+        setModelReady(true);
+        console.log('[EmbeddingScanner] CNN model loaded');
+      })
+      .catch((err) => {
+        console.error('[EmbeddingScanner] CNN model load failed:', err);
+        setError('Failed to load recognition model');
       });
   }, []);
 
@@ -165,11 +181,16 @@ export function useEmbeddingScanner({
       setQualityIssues([]);
       lastCardCanvasRef.current = normResult.canvas;
 
-      // Step 2: Extract art region
-      const artCanvas = extractArtRegion(normResult.canvas);
+      // Step 2: Resize normalized card canvas to model input size for CNN embedding
+      const resizedCanvas = document.createElement('canvas');
+      resizedCanvas.width = 224;
+      resizedCanvas.height = 224;
+      const resizedCtx = resizedCanvas.getContext('2d');
+      if (!resizedCtx) return null;
+      resizedCtx.drawImage(normResult.canvas, 0, 0, 224, 224);
 
-      // Step 3: Compute embedding
-      const frameEmbedding = extractEmbeddingFromArtCanvas(artCanvas);
+      // Step 3: Compute CNN embedding from full card
+      const frameEmbedding = await computeEmbeddingFromCanvas(resizedCanvas);
 
       if (!frameEmbedding || frameEmbedding.length === 0) {
         return null;
@@ -221,11 +242,16 @@ export function useEmbeddingScanner({
       
       lastCardCanvasRef.current = normResult.canvas;
 
-      // Step 2: Extract art region
-      const artCanvas = extractArtRegion(normResult.canvas);
+      // Step 2: Resize normalized card canvas to model input size for CNN embedding
+      const resizedCanvas = document.createElement('canvas');
+      resizedCanvas.width = 224;
+      resizedCanvas.height = 224;
+      const resizedCtx = resizedCanvas.getContext('2d');
+      if (!resizedCtx) return null;
+      resizedCtx.drawImage(normResult.canvas, 0, 0, 224, 224);
 
-      // Step 3: Compute embedding
-      const frameEmbedding = extractEmbeddingFromArtCanvas(artCanvas);
+      // Step 3: Compute CNN embedding from full card
+      const frameEmbedding = await computeEmbeddingFromCanvas(resizedCanvas);
 
       if (!frameEmbedding || frameEmbedding.length === 0) {
         return null;

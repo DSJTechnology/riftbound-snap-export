@@ -261,10 +261,10 @@ const SanityTests = () => {
     return image?.image_url || null;
   };
   
-  // Compute embedding from URL
+  // Compute embedding from URL (uses full card, not art-only)
   const computeEmbeddingFromUrl = async (url: string): Promise<number[]> => {
     const img = await loadImage(url);
-    const canvas = drawCardToCanvas(img, { useArtRegion: true });
+    const canvas = drawCardToCanvas(img, { useArtRegion: false });
     return computeEmbeddingFromCanvas(canvas);
   };
   
@@ -278,7 +278,7 @@ const SanityTests = () => {
     
     try {
       const img = await loadImage(url);
-      const canvas = drawCardToCanvas(img, { useArtRegion: true });
+      const canvas = drawCardToCanvas(img, { useArtRegion: false });
       const stats = getCanvasStats(canvas);
       const dataUrl = canvasToDataUrl(canvas);
       
