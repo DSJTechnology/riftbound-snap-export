@@ -17,7 +17,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const BATCH_SIZE = 2; // Small batch to avoid WORKER_LIMIT errors
+const BATCH_SIZE = 1; // Process 1 card at a time to avoid memory limits
 
 // Diagnostic cards to log
 const DIAGNOSTIC_CARDS = ['OGN-001', 'OGN-050', 'OGN-100', 'OGN-150', 'SFD-001'];
@@ -127,23 +127,7 @@ serve(async (req) => {
           continue;
         }
         
-        // Fetch original image for storage
-        const imageResponse = await fetch(imageUrl);
-        if (!imageResponse.ok) { 
-          console.warn(`[sync] Failed to fetch image for ${card.id}: ${imageResponse.status}`);
-          failed++; 
-          continue; 
-        }
-        
-        const imageBuffer = await imageResponse.arrayBuffer();
-        const imageBytes = new Uint8Array(imageBuffer);
-        
-        // Upload to storage
-        await supabase.storage.from('riftbound-cards').upload(`${card.id}.webp`, imageBytes, {
-          contentType: 'image/webp',
-          upsert: true,
-        });
-        
+        // Use existing storage URL or construct one (skip re-upload to save memory)
         const { data: publicUrlData } = supabase.storage.from('riftbound-cards').getPublicUrl(`${card.id}.webp`);
         
         // Log diagnostic cards
@@ -152,10 +136,9 @@ serve(async (req) => {
           console.log(`[sync] DIAGNOSTIC ${card.id} (${card.name}):`);
           console.log(`  First 5 values: [${embedding.slice(0, 5).map(v => v.toFixed(6)).join(', ')}]`);
           console.log(`  L2 norm: ${norm.toFixed(6)}`);
-          console.log(`  Last 5 values: [${embedding.slice(-5).map(v => v.toFixed(6)).join(', ')}]`);
         }
         
-        // Upsert to database
+        // Upsert to database (embedding only, keep existing art_url if present)
         const { error } = await supabase.from('riftbound_cards').upsert({
           card_id: card.id,
           name: card.name,
