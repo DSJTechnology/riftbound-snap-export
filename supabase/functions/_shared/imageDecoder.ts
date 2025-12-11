@@ -70,14 +70,14 @@ function parseWebpDimensions(bytes: Uint8Array): { width: number; height: number
 }
 
 /**
- * Decode WebP by fetching as PNG from wsrv.nl image proxy
- * This service converts WebP to PNG on the fly
+ * Decode WebP by fetching as small PNG from wsrv.nl image proxy
+ * Request 300px wide image to reduce memory usage
  */
 export async function fetchImageAsPng(imageUrl: string): Promise<Uint8Array | null> {
   try {
-    // Use wsrv.nl (formerly images.weserv.nl) to convert WebP to PNG
-    const proxyUrl = `https://wsrv.nl/?url=${encodeURIComponent(imageUrl)}&output=png`;
-    console.log(`[imageDecoder] Fetching via proxy: ${proxyUrl}`);
+    // Use wsrv.nl with width resize to keep memory low (300px is enough for 224px output)
+    const proxyUrl = `https://wsrv.nl/?url=${encodeURIComponent(imageUrl)}&w=300&output=png`;
+    console.log(`[imageDecoder] Fetching via proxy (300px): ${proxyUrl.substring(0, 100)}...`);
     
     const response = await fetch(proxyUrl);
     if (!response.ok) {
@@ -86,6 +86,7 @@ export async function fetchImageAsPng(imageUrl: string): Promise<Uint8Array | nu
     }
     
     const buffer = await response.arrayBuffer();
+    console.log(`[imageDecoder] Proxy returned ${buffer.byteLength} bytes`);
     return new Uint8Array(buffer);
   } catch (e) {
     console.error(`[imageDecoder] Proxy fetch error:`, e);
