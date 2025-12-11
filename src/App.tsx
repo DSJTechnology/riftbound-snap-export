@@ -7,6 +7,7 @@ import { CardDatabaseProvider } from "@/contexts/CardDatabaseContext";
 import { CardHashProvider } from "@/contexts/CardHashContext";
 import { CardEmbeddingProvider } from "@/contexts/CardEmbeddingContext";
 import Index from "./pages/Index";
+import Training from "./pages/Training";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -22,6 +23,7 @@ const App = () => (
             <BrowserRouter>
               <Routes>
                 <Route path="/" element={<Index />} />
+                <Route path="/training" element={<Training />} />
                 {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
                 <Route path="*" element={<NotFound />} />
               </Routes>

@@ -1,0 +1,114 @@
+import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
+
+interface ImageResult {
+  thumbnailUrl: string;
+  originalUrl: string;
+  title: string;
+}
+
+serve(async (req: Request) => {
+  // Handle CORS preflight
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  try {
+    const url = new URL(req.url);
+    const cardId = url.searchParams.get('card_id');
+    const cardName = url.searchParams.get('card_name');
+
+    if (!cardId && !cardName) {
+      return new Response(
+        JSON.stringify({ error: 'Missing card_id or card_name parameter' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Look up card name from DB if only card_id provided
+    let searchName = cardName;
+    if (!searchName && cardId) {
+      const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+      const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+      const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+      const { data: card } = await supabase
+        .from('riftbound_cards')
+        .select('name')
+        .eq('card_id', cardId)
+        .maybeSingle();
+
+      if (card) {
+        searchName = card.name;
+      } else {
+        searchName = cardId; // Fall back to using card_id as search term
+      }
+    }
+
+    // Get API keys from environment
+    const googleApiKey = Deno.env.get('GOOGLE_SEARCH_API_KEY');
+    const searchEngineId = Deno.env.get('GOOGLE_SEARCH_ENGINE_ID');
+
+    if (!googleApiKey || !searchEngineId) {
+      console.warn('[training-search-images] Google Search API not configured');
+      return new Response(
+        JSON.stringify({ 
+          error: 'Image search API not configured. Please set GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID.',
+          results: [] 
+        }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Construct search query
+    const searchQuery = `riftbound tcg "${searchName}" card`;
+    console.log(`[training-search-images] Searching for: ${searchQuery}`);
+
+    // Call Google Custom Search API
+    const googleUrl = new URL('https://www.googleapis.com/customsearch/v1');
+    googleUrl.searchParams.set('key', googleApiKey);
+    googleUrl.searchParams.set('cx', searchEngineId);
+    googleUrl.searchParams.set('q', searchQuery);
+    googleUrl.searchParams.set('searchType', 'image');
+    googleUrl.searchParams.set('num', '10');
+    googleUrl.searchParams.set('safe', 'active');
+
+    const googleResponse = await fetch(googleUrl.toString());
+    const googleData = await googleResponse.json();
+
+    if (!googleResponse.ok) {
+      console.error('[training-search-images] Google API error:', googleData);
+      return new Response(
+        JSON.stringify({ error: 'Image search failed', details: googleData }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Parse results
+    const results: ImageResult[] = (googleData.items || []).map((item: any) => ({
+      thumbnailUrl: item.image?.thumbnailLink || item.link,
+      originalUrl: item.link,
+      title: item.title || 'Unknown',
+    }));
+
+    console.log(`[training-search-images] Found ${results.length} images for "${searchName}"`);
+
+    return new Response(
+      JSON.stringify({ results, card_name: searchName }),
+      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+
+  } catch (error: unknown) {
+    console.error('[training-search-images] Error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return new Response(
+      JSON.stringify({ error: errorMessage }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+  }
+});

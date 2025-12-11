@@ -95,6 +95,33 @@ export type Database = {
         }
         Relationships: []
       }
+      training_images: {
+        Row: {
+          card_id: string
+          created_at: string
+          id: string
+          image_url: string
+          source: string
+          used_in_model: boolean
+        }
+        Insert: {
+          card_id: string
+          created_at?: string
+          id?: string
+          image_url: string
+          source: string
+          used_in_model?: boolean
+        }
+        Update: {
+          card_id?: string
+          created_at?: string
+          id?: string
+          image_url?: string
+          source?: string
+          used_in_model?: boolean
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
