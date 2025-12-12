@@ -1,10 +1,16 @@
 /**
  * Card detection and perspective normalization utilities.
- * Uses OpenCV.js for card edge detection and perspective correction.
+ * Uses OpenCV.js via the shared cardDetection module.
  */
 
-// OpenCV.js will be loaded dynamically
-declare const cv: any;
+import {
+  loadOpenCV as loadOpenCVShared,
+  isOpenCVReady as isOpenCVReadyShared,
+  detectAndWarpCard,
+  drawQuadOverlay,
+  CardQuad,
+  CARD_ASPECT_RATIO,
+} from '@/shared/cardDetection';
 
 // Canonical card dimensions (3.5" x 2.5" ratio = 7:5 = 700:500 or similar)
 export const CARD_WIDTH = 500;
@@ -18,79 +24,21 @@ export const ART_REGION = {
   BOTTOM: 0.58,
 } as const;
 
-let opencvLoaded = false;
-let opencvLoadPromise: Promise<void> | null = null;
+// Default inset fraction to avoid sleeve borders
+const INSET_FRACTION = 0.05;
 
-/**
- * Load OpenCV.js dynamically
- */
-export async function loadOpenCV(): Promise<void> {
-  if (opencvLoaded) return;
-  
-  if (opencvLoadPromise) {
-    await opencvLoadPromise;
-    return;
-  }
+// Re-export shared functions
+export const loadOpenCV = loadOpenCVShared;
+export const isOpenCVReady = isOpenCVReadyShared;
 
-  opencvLoadPromise = new Promise((resolve, reject) => {
-    // Check if already loaded
-    if (typeof cv !== 'undefined' && cv.Mat) {
-      opencvLoaded = true;
-      resolve();
-      return;
-    }
+// Export CardQuad type for consumers
+export type { CardQuad };
 
-    const script = document.createElement('script');
-    script.src = 'https://docs.opencv.org/4.8.0/opencv.js';
-    script.async = true;
-    
-    script.onload = () => {
-      // OpenCV.js needs time to initialize
-      const checkReady = () => {
-        if (typeof cv !== 'undefined' && cv.Mat) {
-          opencvLoaded = true;
-          console.log('[CardNormalization] OpenCV.js loaded');
-          resolve();
-        } else {
-          setTimeout(checkReady, 50);
-        }
-      };
-      checkReady();
-    };
-    
-    script.onerror = () => {
-      console.error('[CardNormalization] Failed to load OpenCV.js');
-      reject(new Error('Failed to load OpenCV.js'));
-    };
-    
-    document.head.appendChild(script);
-  });
-
-  await opencvLoadPromise;
-}
-
-/**
- * Check if OpenCV is loaded and ready
- */
-export function isOpenCVReady(): boolean {
-  return opencvLoaded && typeof cv !== 'undefined' && cv.Mat;
-}
-
-/**
- * Order 4 corner points in consistent order: top-left, top-right, bottom-right, bottom-left
- */
-function orderPoints(pts: { x: number; y: number }[]): { x: number; y: number }[] {
-  // Sort by sum (x+y) to find TL and BR
-  const sorted = [...pts].sort((a, b) => (a.x + a.y) - (b.x + b.y));
-  const tl = sorted[0];
-  const br = sorted[3];
-  
-  // Sort by difference (y-x) to find TR and BL
-  const sortedDiff = [...pts].sort((a, b) => (a.y - a.x) - (b.y - b.x));
-  const tr = sortedDiff[0];
-  const bl = sortedDiff[3];
-  
-  return [tl, tr, br, bl];
+export interface NormalizeResult {
+  canvas: HTMLCanvasElement;
+  success: boolean;
+  message: string;
+  detectedQuad?: CardQuad;
 }
 
 /**
@@ -99,157 +47,45 @@ function orderPoints(pts: { x: number; y: number }[]): { x: number; y: number }[
  */
 export async function normalizeCardFromVideoFrame(
   video: HTMLVideoElement
-): Promise<{ canvas: HTMLCanvasElement; success: boolean; message: string }> {
+): Promise<NormalizeResult> {
   const resultCanvas = document.createElement('canvas');
   resultCanvas.width = CARD_WIDTH;
   resultCanvas.height = CARD_HEIGHT;
   const resultCtx = resultCanvas.getContext('2d')!;
 
-  // If OpenCV not ready, fall back to center crop
-  if (!isOpenCVReady()) {
-    console.log('[CardNormalization] OpenCV not ready, using fallback crop');
-    return fallbackCrop(video, resultCanvas, resultCtx);
-  }
+  // Capture frame from video
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = video.videoWidth;
+  tempCanvas.height = video.videoHeight;
+  const tempCtx = tempCanvas.getContext('2d')!;
+  tempCtx.drawImage(video, 0, 0);
 
-  try {
-    // Capture frame from video
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = video.videoWidth;
-    tempCanvas.height = video.videoHeight;
-    const tempCtx = tempCanvas.getContext('2d')!;
-    tempCtx.drawImage(video, 0, 0);
+  // Use shared detection and warp with inset
+  const { warped, detection } = detectAndWarpCard(tempCanvas, {
+    outputWidth: CARD_WIDTH,
+    outputHeight: CARD_HEIGHT,
+    insetFraction: INSET_FRACTION,
+  });
 
-    // Convert to OpenCV Mat
-    const src = cv.imread(tempCanvas);
-    const gray = new cv.Mat();
-    const blurred = new cv.Mat();
-    const edges = new cv.Mat();
-    const contours = new cv.MatVector();
-    const hierarchy = new cv.Mat();
+  // Copy warped result to our result canvas
+  resultCtx.drawImage(warped.canvas, 0, 0);
 
-    // Convert to grayscale
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-    
-    // Apply Gaussian blur
-    cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
-    
-    // Canny edge detection
-    cv.Canny(blurred, edges, 50, 150);
-    
-    // Dilate to close gaps
-    const kernel = cv.Mat.ones(3, 3, cv.CV_8U);
-    cv.dilate(edges, edges, kernel);
-    
-    // Find contours
-    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-    // Find the largest 4-sided contour
-    let bestContour: any = null;
-    let maxArea = 0;
-    const minArea = (video.videoWidth * video.videoHeight) * 0.1; // Card should be at least 10% of frame
-
-    for (let i = 0; i < contours.size(); i++) {
-      const contour = contours.get(i);
-      const area = cv.contourArea(contour);
-      
-      if (area > minArea && area > maxArea) {
-        // Approximate to polygon
-        const peri = cv.arcLength(contour, true);
-        const approx = new cv.Mat();
-        cv.approxPolyDP(contour, approx, 0.02 * peri, true);
-        
-        // Check if it's a quadrilateral
-        if (approx.rows === 4) {
-          maxArea = area;
-          if (bestContour) bestContour.delete();
-          bestContour = approx;
-        } else {
-          approx.delete();
-        }
-      }
-    }
-
-    // Clean up intermediate mats
-    src.delete();
-    gray.delete();
-    blurred.delete();
-    edges.delete();
-    kernel.delete();
-    hierarchy.delete();
-    
-    for (let i = 0; i < contours.size(); i++) {
-      contours.get(i).delete();
-    }
-    contours.delete();
-
-    if (!bestContour) {
-      console.log('[CardNormalization] No card contour found, using fallback');
-      return fallbackCrop(video, resultCanvas, resultCtx);
-    }
-
-    // Extract corner points
-    const corners: { x: number; y: number }[] = [];
-    for (let i = 0; i < 4; i++) {
-      corners.push({
-        x: bestContour.data32S[i * 2],
-        y: bestContour.data32S[i * 2 + 1],
-      });
-    }
-    bestContour.delete();
-
-    // Order points consistently
-    const orderedCorners = orderPoints(corners);
-
-    // Create perspective transform
-    const srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
-      orderedCorners[0].x, orderedCorners[0].y,
-      orderedCorners[1].x, orderedCorners[1].y,
-      orderedCorners[2].x, orderedCorners[2].y,
-      orderedCorners[3].x, orderedCorners[3].y,
-    ]);
-
-    const dstPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
-      0, 0,
-      CARD_WIDTH, 0,
-      CARD_WIDTH, CARD_HEIGHT,
-      0, CARD_HEIGHT,
-    ]);
-
-    const M = cv.getPerspectiveTransform(srcPts, dstPts);
-    
-    // Read source again for warping
-    const srcForWarp = cv.imread(tempCanvas);
-    const warped = new cv.Mat();
-    
-    cv.warpPerspective(srcForWarp, warped, M, new cv.Size(CARD_WIDTH, CARD_HEIGHT));
-    
-    // Write to result canvas
-    cv.imshow(resultCanvas, warped);
-
-    // Clean up
-    srcPts.delete();
-    dstPts.delete();
-    M.delete();
-    srcForWarp.delete();
-    warped.delete();
-
-    console.log('[CardNormalization] Card detected and normalized');
-    return { canvas: resultCanvas, success: true, message: 'Card detected' };
-
-  } catch (err) {
-    console.error('[CardNormalization] Error during detection:', err);
-    return fallbackCrop(video, resultCanvas, resultCtx);
-  }
+  return {
+    canvas: resultCanvas,
+    success: detection.quad !== null,
+    message: detection.message,
+    detectedQuad: detection.quad || undefined,
+  };
 }
 
 /**
  * Fallback: center crop assuming card is roughly centered
  */
-function fallbackCrop(
+export function fallbackCrop(
   video: HTMLVideoElement,
   resultCanvas: HTMLCanvasElement,
   resultCtx: CanvasRenderingContext2D
-): { canvas: HTMLCanvasElement; success: boolean; message: string } {
+): NormalizeResult {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   
@@ -361,4 +197,15 @@ export function drawDebugOverlay(
   
   ctx.fillStyle = 'rgba(255, 255, 0, 0.9)';
   ctx.fillText('Art Region', artLeft + 4, artTop + 14);
+}
+
+/**
+ * Draw detected quad overlay on a canvas
+ */
+export function drawDetectedQuadOverlay(
+  ctx: CanvasRenderingContext2D,
+  quad: CardQuad,
+  color: string = '#00ff00'
+): void {
+  drawQuadOverlay(ctx, quad, color, 3);
 }
