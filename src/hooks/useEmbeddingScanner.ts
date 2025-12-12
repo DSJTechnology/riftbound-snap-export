@@ -174,11 +174,17 @@ export function useEmbeddingScanner({
   
   // New scanner state machine
   const [scannerState, setScannerState] = useState<ScannerState>({ mode: 'SEARCHING' });
+  const scannerStateRef = useRef<ScannerState>({ mode: 'SEARCHING' });
   const [scanStatus, setScanStatus] = useState<ScanStatus>({ state: 'READY' });
   const [cardCoverage, setCardCoverage] = useState(0);
   
   // Prediction history for stable-guess detection
   const predictionsRef = useRef<FramePrediction[]>([]);
+  
+  // Keep ref in sync with state
+  useEffect(() => {
+    scannerStateRef.current = scannerState;
+  }, [scannerState]);
 
   // Load OpenCV and CNN model on mount
   useEffect(() => {
@@ -380,11 +386,12 @@ export function useEmbeddingScanner({
   const autoScanFrame = useCallback(async () => {
     if (isScanningRef.current) return;
     
+    const currentState = scannerStateRef.current;
     const now = Date.now();
     
     // Handle cooldown state
-    if (scannerState.mode === 'COOLDOWN') {
-      if (scannerState.cooldownUntil && now >= scannerState.cooldownUntil) {
+    if (currentState.mode === 'COOLDOWN') {
+      if (currentState.cooldownUntil && now >= currentState.cooldownUntil) {
         setScannerState({ mode: 'SEARCHING' });
         predictionsRef.current = [];
       } else {
@@ -393,7 +400,7 @@ export function useEmbeddingScanner({
     }
     
     // If we're in proposal mode, don't process new frames
-    if (scannerState.mode === 'PROPOSAL') {
+    if (currentState.mode === 'PROPOSAL') {
       return;
     }
 
@@ -529,7 +536,7 @@ export function useEmbeddingScanner({
       isScanningRef.current = false;
       setIsScanning(false);
     }
-  }, [quickScanFrame, scannerState]);
+  }, [quickScanFrame]);
 
   // Start/stop auto-scan loop
   useEffect(() => {
