@@ -7,6 +7,7 @@ import {
   normalizeCardFromVideoFrame,
   CardQuad,
 } from '@/utils/cardNormalization';
+import { computeQuadCoverage } from '@/shared/cardDetection';
 import { 
   loadEmbeddingModel,
   computeEmbeddingFromCanvas,
@@ -26,8 +27,50 @@ import {
 } from '@/utils/embeddingConfig';
 
 // Configuration constants
-const SCAN_INTERVAL_MS = 800;
+const SCAN_INTERVAL_MS = 500; // Faster scanning for stability detection
 const DUPLICATE_COOLDOWN_MS = 3000;
+
+// Coverage gating - require card to fill most of the frame
+const MIN_CARD_COVERAGE = 0.60; // Card must cover 60% of scan region
+
+// Stable guess thresholds
+const STABLE_WINDOW_MS = 1000;    // Look at ~1s worth of frames
+const MIN_STABLE_MATCHES = 4;     // At least 4 frames agreeing
+const MIN_SIMILARITY = 0.82;      // Threshold for "good enough" to lock
+const MIN_MARGIN = 0.04;          // Winning card should beat #2 by this margin
+
+// Scanner state machine types
+type ScannerMode = 'SEARCHING' | 'PROPOSAL' | 'COOLDOWN';
+
+interface ScanProposal {
+  cardId: string;
+  cardName: string;
+  similarity: number;
+  card: EmbeddedCard;
+  candidates: EmbeddingMatchResult[];
+}
+
+interface FramePrediction {
+  cardId: string;
+  similarity: number;
+  margin: number;
+  timestamp: number;
+}
+
+interface ScannerState {
+  mode: ScannerMode;
+  proposal?: ScanProposal;
+  cooldownUntil?: number;
+}
+
+// Scan status for UX messaging
+export type ScanStatus = 
+  | { state: 'READY' }
+  | { state: 'NEEDS_MORE_CARD'; message: string }
+  | { state: 'SEARCHING'; message: string }
+  | { state: 'STABILIZING'; message: string; progress: number }
+  | { state: 'PROPOSAL'; proposal: ScanProposal }
+  | { state: 'COOLDOWN' };
 
 export interface EmbeddingMatchResult {
   card: EmbeddedCard;
@@ -79,6 +122,8 @@ export interface UseEmbeddingScannerReturn {
   opencvReady: boolean;
   detectedQuad: CardQuad | null;
   cardDetected: boolean;
+  scanStatus: ScanStatus;
+  cardCoverage: number;
   openCamera: () => Promise<void>;
   closeCamera: () => void;
   toggleAutoScan: () => void;
@@ -88,6 +133,7 @@ export interface UseEmbeddingScannerReturn {
   confirmPendingMatch: (selectedCard?: EmbeddedCard) => void;
   selectCandidate: (card: EmbeddedCard, score: number) => void;
   cancelPendingMatch: () => void;
+  rescan: () => void;
 }
 
 export type { EmbeddedCard } from '@/contexts/CardEmbeddingContext';
@@ -125,6 +171,14 @@ export function useEmbeddingScanner({
   const [modelReady, setModelReady] = useState(false);
   const [detectedQuad, setDetectedQuad] = useState<CardQuad | null>(null);
   const [cardDetected, setCardDetected] = useState(false);
+  
+  // New scanner state machine
+  const [scannerState, setScannerState] = useState<ScannerState>({ mode: 'SEARCHING' });
+  const [scanStatus, setScanStatus] = useState<ScanStatus>({ state: 'READY' });
+  const [cardCoverage, setCardCoverage] = useState(0);
+  
+  // Prediction history for stable-guess detection
+  const predictionsRef = useRef<FramePrediction[]>([]);
 
   // Load OpenCV and CNN model on mount
   useEffect(() => {
@@ -160,12 +214,13 @@ export function useEmbeddingScanner({
     };
   }, []);
 
-  // Quick visual-only scan for auto-scan mode
+  // Quick visual-only scan for auto-scan mode with coverage gating
   const quickScanFrame = useCallback(async (): Promise<{
     matches: MultiSignalMatch[];
     embedding: number[];
     cardCanvas: HTMLCanvasElement;
     message: string;
+    coverage: number;
   } | null> => {
     if (!videoRef.current || cardIndex.length === 0) return null;
 
@@ -180,9 +235,29 @@ export function useEmbeddingScanner({
       setDetectedQuad(normResult.detectedQuad || null);
       setCardDetected(normResult.success);
       
-      if (!normResult.success) {
-        setQualityIssues([normResult.message]);
-        // Don't proceed with bad crops in auto-scan
+      // Compute coverage if we have a quad
+      let coverage = 0;
+      if (normResult.detectedQuad) {
+        coverage = computeQuadCoverage(
+          normResult.detectedQuad,
+          video.videoWidth,
+          video.videoHeight
+        );
+        setCardCoverage(coverage);
+      } else {
+        setCardCoverage(0);
+      }
+      
+      // Coverage gating - require card to fill enough of the frame
+      if (!normResult.success || coverage < MIN_CARD_COVERAGE) {
+        const msg = coverage < MIN_CARD_COVERAGE && normResult.detectedQuad
+          ? 'Move the card closer so it fills the frame.'
+          : normResult.message;
+        setQualityIssues([msg]);
+        setScanStatus({ 
+          state: 'NEEDS_MORE_CARD', 
+          message: msg
+        });
         return null;
       }
       
@@ -219,7 +294,8 @@ export function useEmbeddingScanner({
         matches, 
         embedding: frameEmbedding, 
         cardCanvas: normResult.canvas,
-        message: normResult.message 
+        message: normResult.message,
+        coverage,
       };
     } catch (err) {
       console.error('[EmbeddingScanner] Quick scan error:', err);
@@ -300,9 +376,26 @@ export function useEmbeddingScanner({
     }
   }, [cardIndex, enableOCR]);
 
-  // Auto-scan with quick visual matching
+  // Auto-scan with stable-guess detection
   const autoScanFrame = useCallback(async () => {
     if (isScanningRef.current) return;
+    
+    const now = Date.now();
+    
+    // Handle cooldown state
+    if (scannerState.mode === 'COOLDOWN') {
+      if (scannerState.cooldownUntil && now >= scannerState.cooldownUntil) {
+        setScannerState({ mode: 'SEARCHING' });
+        predictionsRef.current = [];
+      } else {
+        return; // Skip this frame during cooldown
+      }
+    }
+    
+    // If we're in proposal mode, don't process new frames
+    if (scannerState.mode === 'PROPOSAL') {
+      return;
+    }
 
     isScanningRef.current = true;
     setIsScanning(true);
@@ -310,8 +403,19 @@ export function useEmbeddingScanner({
     try {
       const result = await quickScanFrame();
 
-      if (result && result.matches.length > 0) {
+      if (!result) {
+        // quickScanFrame already set the appropriate status
+        isScanningRef.current = false;
+        setIsScanning(false);
+        return;
+      }
+      
+      if (result.matches.length > 0) {
         const topMatch = result.matches[0];
+        const secondMatch = result.matches[1];
+        const margin = secondMatch 
+          ? topMatch.combinedScore - secondMatch.combinedScore 
+          : topMatch.combinedScore;
         
         setBestMatch(topMatch.card);
         setBestScore(topMatch.combinedScore);
@@ -323,19 +427,86 @@ export function useEmbeddingScanner({
           confidence: m.confidence,
         })));
 
-        // Only auto-trigger if high confidence AND has margin
-        if (topMatch.combinedScore >= SIMILARITY_THRESHOLDS.AUTO_CONFIRM && topMatch.hasMargin) {
-          const now = Date.now();
-          const lastTrigger = lastConfirmTriggerRef.current;
-
+        // Add to prediction history
+        const newPred: FramePrediction = { 
+          cardId: topMatch.card.cardId, 
+          similarity: topMatch.combinedScore,
+          margin,
+          timestamp: now 
+        };
+        
+        // Keep only recent predictions within the stable window
+        predictionsRef.current = [
+          ...predictionsRef.current.filter(p => now - p.timestamp <= STABLE_WINDOW_MS),
+          newPred,
+        ];
+        
+        // Compute stability: count predictions per cardId
+        const counts = new Map<string, { count: number; maxSim: number; maxMargin: number }>();
+        for (const p of predictionsRef.current) {
+          const entry = counts.get(p.cardId) ?? { count: 0, maxSim: 0, maxMargin: 0 };
+          entry.count += 1;
+          entry.maxSim = Math.max(entry.maxSim, p.similarity);
+          entry.maxMargin = Math.max(entry.maxMargin, p.margin);
+          counts.set(p.cardId, entry);
+        }
+        
+        // Find the most stable candidate
+        let stableCardId: string | null = null;
+        let stableCount = 0;
+        let stableSim = 0;
+        let stableMargin = 0;
+        
+        for (const [id, { count, maxSim, maxMargin }] of counts.entries()) {
+          if (count > stableCount || (count === stableCount && maxSim > stableSim)) {
+            stableCardId = id;
+            stableCount = count;
+            stableSim = maxSim;
+            stableMargin = maxMargin;
+          }
+        }
+        
+        // Show stabilizing progress
+        const progress = Math.min(100, Math.round((stableCount / MIN_STABLE_MATCHES) * 100));
+        setScanStatus({ 
+          state: 'STABILIZING', 
+          message: `Hold steady... (${progress}%)`,
+          progress 
+        });
+        
+        // Check if we should propose a stable match
+        if (
+          stableCardId &&
+          stableCount >= MIN_STABLE_MATCHES &&
+          stableSim >= MIN_SIMILARITY &&
+          stableMargin >= MIN_MARGIN
+        ) {
           // Check duplicate cooldown
-          if (!lastTrigger || lastTrigger.cardId !== topMatch.card.cardId || now - lastTrigger.timestamp >= DUPLICATE_COOLDOWN_MS) {
-            console.log(`[EmbeddingScanner] Auto-triggering: ${topMatch.card.name} (${(topMatch.combinedScore * 100).toFixed(1)}%)`);
-            lastConfirmTriggerRef.current = { cardId: topMatch.card.cardId, timestamp: now };
+          const lastTrigger = lastConfirmTriggerRef.current;
+          if (!lastTrigger || lastTrigger.cardId !== stableCardId || now - lastTrigger.timestamp >= DUPLICATE_COOLDOWN_MS) {
+            console.log(`[EmbeddingScanner] Stable match found: ${topMatch.card.name} (${(stableSim * 100).toFixed(1)}%, ${stableCount} frames)`);
             
+            // Build proposal
+            const proposal: ScanProposal = {
+              cardId: stableCardId,
+              cardName: topMatch.card.name,
+              similarity: stableSim,
+              card: topMatch.card,
+              candidates: result.matches.map(m => ({
+                card: m.card,
+                score: m.combinedScore,
+                visualScore: m.visualScore,
+                confidence: m.confidence,
+              })),
+            };
+            
+            setScannerState({ mode: 'PROPOSAL', proposal });
+            setScanStatus({ state: 'PROPOSAL', proposal });
+            
+            // Also set pending match for confirmation UI
             setPendingMatch({ 
               card: topMatch.card, 
-              score: topMatch.combinedScore,
+              score: stableSim,
               candidates: result.matches.map(m => ({
                 card: m.card,
                 score: m.combinedScore,
@@ -343,17 +514,22 @@ export function useEmbeddingScanner({
                 confidence: m.confidence,
               })),
               visualEmbedding: result.embedding,
-              needsConfirmation: false,
+              needsConfirmation: true,
               ambiguous: false,
             });
+            
+            // Clear prediction history
+            predictionsRef.current = [];
           }
         }
+      } else {
+        setScanStatus({ state: 'SEARCHING', message: 'Looking for card...' });
       }
     } finally {
       isScanningRef.current = false;
       setIsScanning(false);
     }
-  }, [quickScanFrame]);
+  }, [quickScanFrame, scannerState]);
 
   // Start/stop auto-scan loop
   useEffect(() => {
@@ -519,6 +695,12 @@ export function useEmbeddingScanner({
 
     onCardConfirmed(cardData, cardToConfirm.cardId);
     setPendingMatch(null);
+    
+    // Record the confirm and enter cooldown
+    lastConfirmTriggerRef.current = { cardId: cardToConfirm.cardId, timestamp: Date.now() };
+    setScannerState({ mode: 'COOLDOWN', cooldownUntil: Date.now() + 1500 });
+    setScanStatus({ state: 'COOLDOWN' });
+    predictionsRef.current = [];
   }, [pendingMatch, onCardConfirmed]);
 
   // Select a different candidate
@@ -534,6 +716,21 @@ export function useEmbeddingScanner({
 
   const cancelPendingMatch = useCallback(() => {
     setPendingMatch(null);
+    // Return to searching state
+    setScannerState({ mode: 'SEARCHING' });
+    setScanStatus({ state: 'SEARCHING', message: 'Looking for card...' });
+    predictionsRef.current = [];
+  }, []);
+  
+  // Rescan function - cancel proposal and go back to searching
+  const rescan = useCallback(() => {
+    setPendingMatch(null);
+    setScannerState({ mode: 'SEARCHING' });
+    setScanStatus({ state: 'SEARCHING', message: 'Looking for card...' });
+    predictionsRef.current = [];
+    setBestMatch(null);
+    setBestScore(null);
+    setMatchCandidates([]);
   }, []);
 
   const handleVideoReady = useCallback(() => {
@@ -566,6 +763,8 @@ export function useEmbeddingScanner({
     opencvReady,
     detectedQuad,
     cardDetected,
+    scanStatus,
+    cardCoverage,
     openCamera,
     closeCamera,
     toggleAutoScan,
@@ -575,5 +774,6 @@ export function useEmbeddingScanner({
     confirmPendingMatch,
     selectCandidate,
     cancelPendingMatch,
+    rescan,
   };
 }

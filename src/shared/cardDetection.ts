@@ -479,6 +479,30 @@ export function detectAndWarpCard(
 }
 
 /**
+ * Compute the area coverage of a quad relative to the region dimensions.
+ * Uses the shoelace formula for polygon area.
+ * Returns a value between 0 and 1.
+ */
+export function computeQuadCoverage(
+  quad: CardQuad,
+  regionWidth: number,
+  regionHeight: number
+): number {
+  const pts = [quad.topLeft, quad.topRight, quad.bottomRight, quad.bottomLeft];
+  let area = 0;
+  
+  // Shoelace formula
+  for (let i = 0; i < pts.length; i++) {
+    const j = (i + 1) % pts.length;
+    area += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
+  }
+  area = Math.abs(area) / 2;
+  
+  const regionArea = regionWidth * regionHeight || 1;
+  return Math.min(1, area / regionArea);
+}
+
+/**
  * Draw detected quad overlay on a canvas for visualization.
  */
 export function drawQuadOverlay(
