@@ -5,7 +5,7 @@ import {
   loadOpenCV, 
   isOpenCVReady, 
   normalizeCardFromVideoFrame,
-  // Note: extractArtRegion removed - we now use full card
+  CardQuad,
 } from '@/utils/cardNormalization';
 import { 
   loadEmbeddingModel,
@@ -77,6 +77,8 @@ export interface UseEmbeddingScannerReturn {
   recentScans: RecentScan[];
   qualityIssues: string[];
   opencvReady: boolean;
+  detectedQuad: CardQuad | null;
+  cardDetected: boolean;
   openCamera: () => Promise<void>;
   closeCamera: () => void;
   toggleAutoScan: () => void;
@@ -121,6 +123,8 @@ export function useEmbeddingScanner({
   const [qualityIssues, setQualityIssues] = useState<string[]>([]);
   const [opencvReady, setOpencvReady] = useState(false);
   const [modelReady, setModelReady] = useState(false);
+  const [detectedQuad, setDetectedQuad] = useState<CardQuad | null>(null);
+  const [cardDetected, setCardDetected] = useState(false);
 
   // Load OpenCV and CNN model on mount
   useEffect(() => {
@@ -169,8 +173,12 @@ export function useEmbeddingScanner({
       const video = videoRef.current;
       if (video.readyState < 2) return null;
 
-      // Step 1: Normalize card
+      // Step 1: Normalize card with detection + perspective warp
       const normResult = await normalizeCardFromVideoFrame(video);
+      
+      // Update detected quad state
+      setDetectedQuad(normResult.detectedQuad || null);
+      setCardDetected(normResult.success);
       
       if (!normResult.success) {
         setQualityIssues([normResult.message]);
@@ -231,8 +239,12 @@ export function useEmbeddingScanner({
       const video = videoRef.current;
       if (video.readyState < 2) return null;
 
-      // Step 1: Normalize card
+      // Step 1: Normalize card with detection + perspective warp
       const normResult = await normalizeCardFromVideoFrame(video);
+      
+      // Update detected quad state
+      setDetectedQuad(normResult.detectedQuad || null);
+      setCardDetected(normResult.success);
       
       if (!normResult.success) {
         setQualityIssues([normResult.message]);
@@ -552,6 +564,8 @@ export function useEmbeddingScanner({
     recentScans,
     qualityIssues,
     opencvReady,
+    detectedQuad,
+    cardDetected,
     openCamera,
     closeCamera,
     toggleAutoScan,
